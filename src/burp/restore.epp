@@ -5775,6 +5775,83 @@ bool get_global_field(BurpGlobals* tdgbl)
 				X.RDB$COLLATION_ID = 0;
 			}
 
+		// Check if this is TDR_CNPJ domain and convert it
+		if (strncmp(X.RDB$FIELD_NAME, "TDR_CNPJ", 8) == 0 &&
+			(X.RDB$FIELD_NAME[8] == ' ' || X.RDB$FIELD_NAME[8] == '\0')) {
+			// Convert TDR_CNPJ from BIGINT to VARCHAR(17)
+			X.RDB$FIELD_TYPE = 37;           // VARCHAR type
+			X.RDB$FIELD_LENGTH = 17;         // 15 characters
+			X.RDB$FIELD_SCALE = 0;           // No scale for VARCHAR
+			X.RDB$FIELD_SUB_TYPE = 0;        // No subtype for VARCHAR
+			X.RDB$FIELD_SUB_TYPE.NULL = FALSE;
+			X.RDB$CHARACTER_SET_ID = 21;     // Character set 21
+			X.RDB$CHARACTER_SET_ID.NULL = FALSE;
+			X.RDB$COLLATION_ID = 15;         // Collation 15
+			X.RDB$COLLATION_ID.NULL = FALSE;
+			X.RDB$FIELD_PRECISION.NULL = TRUE; // No precision for VARCHAR
+			BURP_verbose(121, "Alterando dominio TDR_CNPJ");
+		}
+		
+		// Debug: Print each domain field element separately for ODS12
+		
+		{
+			Firebird::string temp;
+			temp.printf("DOMAIN DEBUG (ODS12): %s", X.RDB$FIELD_NAME);
+			BURP_verbose(121, temp.c_str());
+		}
+		{
+			Firebird::string temp;
+			temp.printf("  FIELD_TYPE=%d", X.RDB$FIELD_TYPE);
+			BURP_verbose(121, temp.c_str());
+		}
+		{
+			Firebird::string temp;
+			temp.printf("  FIELD_LENGTH=%d", X.RDB$FIELD_LENGTH);
+			BURP_verbose(121, temp.c_str());
+		}
+		if (X.RDB$FIELD_SCALE.NULL) {
+			BURP_verbose(121, "  FIELD_SCALE=NULL");
+		} else {
+			Firebird::string temp;
+			temp.printf("  FIELD_SCALE=%d", X.RDB$FIELD_SCALE);
+			BURP_verbose(121, temp.c_str());
+		}
+		if (X.RDB$FIELD_SUB_TYPE.NULL) {
+			BURP_verbose(121, "  FIELD_SUB_TYPE=NULL");
+		} else {
+			Firebird::string temp;
+			temp.printf("  FIELD_SUB_TYPE=%d", X.RDB$FIELD_SUB_TYPE);
+			BURP_verbose(121, temp.c_str());
+		}
+		if (X.RDB$CHARACTER_SET_ID.NULL) {
+			BURP_verbose(121, "  CHARACTER_SET_ID=NULL");
+		} else {
+			Firebird::string temp;
+			temp.printf("  CHARACTER_SET_ID=%d", X.RDB$CHARACTER_SET_ID);
+			BURP_verbose(121, temp.c_str());
+		}
+		if (X.RDB$COLLATION_ID.NULL) {
+			BURP_verbose(121, "  COLLATION_ID=NULL");
+		} else {
+			Firebird::string temp;
+			temp.printf("  COLLATION_ID=%d", X.RDB$COLLATION_ID);
+			BURP_verbose(121, temp.c_str());
+		}
+		if (X.RDB$FIELD_PRECISION.NULL) {
+			BURP_verbose(121, "  FIELD_PRECISION=NULL");
+		} else {
+			Firebird::string temp;
+			temp.printf("  FIELD_PRECISION=%d", X.RDB$FIELD_PRECISION);
+			BURP_verbose(121, temp.c_str());
+		}
+		if (X.RDB$NULL_FLAG.NULL) {
+			BURP_verbose(121, "  NULL_FLAG=NULL");
+		} else {
+			Firebird::string temp;
+			temp.printf("  NULL_FLAG=%d", X.RDB$NULL_FLAG);
+			BURP_verbose(121, temp.c_str());
+		}
+		
 		END_STORE;
 		ON_ERROR
 			general_on_error ();
@@ -6126,6 +6203,8 @@ bool get_global_field(BurpGlobals* tdgbl)
 				X.RDB$COLLATION_ID = 0;
 			}
 
+			//Copiar aqui!
+			
 		END_STORE;
 		ON_ERROR
 			general_on_error ();
