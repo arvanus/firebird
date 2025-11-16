@@ -89,6 +89,9 @@
     <ClCompile Include="..\..\..\src\intl\lc_ksc.cpp">
       <Filter>INTL files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\intl\lc_ltrim_zero.cpp">
+      <Filter>INTL files</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\intl\lc_narrow.cpp">
       <Filter>INTL files</Filter>
     </ClCompile>

@@ -220,6 +220,7 @@
     <ClCompile Include="..\..\..\src\intl\lc_iso8859_2.cpp" />
     <ClCompile Include="..\..\..\src\intl\lc_jis.cpp" />
     <ClCompile Include="..\..\..\src\intl\lc_ksc.cpp" />
+    <ClCompile Include="..\..\..\src\intl\lc_ltrim_zero.cpp" />
     <ClCompile Include="..\..\..\src\intl\lc_narrow.cpp" />
     <ClCompile Include="..\..\..\src\intl\lc_unicode_ucs2.cpp" />
     <ClCompile Include="..\..\..\src\intl\ld.cpp" />
