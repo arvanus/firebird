@@ -209,6 +209,8 @@ EXTERN_texttype(KOI8U_c1_init);
 
 EXTERN_texttype(WIN1258_c0_init);
 
+EXTERN_texttype(LCLTRIMZERO_init);
+
 EXTERN_charset(CS_iso_ISO8859_1);
 EXTERN_charset(CS_iso_ISO8859_2);
 EXTERN_charset(CS_iso_ISO8859_3);
@@ -381,6 +383,7 @@ struct
 	{"ISO8859_1", "ES_ES_CI_AI", ISO88591_56_init},
 	{"ISO8859_1", "FR_FR_CI_AI", ISO88591_42_init},
 	{"ISO8859_1", "FR_CA_CI_AI", ISO88591_43_init},
+	{"ISO8859_1", "ISO8859_1_LTRIM_ZERO", LCLTRIMZERO_init},
 	{"ISO8859_2", "ISO8859_2", ISO88592_cp_init},
 	{"ISO8859_2", "CS_CZ", ISO88592_c1_init},
 	{"ISO8859_2", "ISO_HUN", ISO88592_c2_init},
@@ -439,6 +442,7 @@ struct
 	{"WIN1252", "PXW_SPAN", WIN1252_c4_init},
 	{"WIN1252", "PXW_SWEDFIN", WIN1252_c5_init},
 	{"WIN1252", "WIN_PTBR", WIN1252_c6_init},
+	{"WIN1252", "WIN1252_LTRIM_ZERO", LCLTRIMZERO_init},
 	{"WIN1253", "WIN1253", WIN1253_c0_init},
 	{"WIN1253", "PXW_GREEK", WIN1253_c1_init},
 	{"WIN1254", "WIN1254", WIN1254_c0_init},
