@@ -34,6 +34,15 @@
 
 using namespace Firebird;
 
+namespace {
+
+// Empty implementation structure - we don't need internal state
+struct TextTypeImpl
+{
+};
+
+} // namespace
+
 // Constants for buffer management
 const ULONG STACK_BUFFER_SIZE = 1024;  // Use stack for small strings
 const ULONG MAX_SAFE_STRING = 32000;   // Safety limit
