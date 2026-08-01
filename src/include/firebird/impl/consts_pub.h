@@ -569,6 +569,7 @@
 #define isc_spb_res_use_all_space		0x4000
 #define isc_spb_res_direct_io			isc_spb_bkp_direct_io
 #define isc_spb_res_replica_mode		20
+#define isc_spb_res_fix_domains			22
 
 /*****************************************
  * Parameters for isc_action_svc_validate *

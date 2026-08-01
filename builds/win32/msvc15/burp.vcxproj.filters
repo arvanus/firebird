@@ -24,6 +24,9 @@
     <ClCompile Include="..\..\..\src\burp\canonical.cpp">
       <Filter>BURP files</Filter>
     </ClCompile>
+    <ClCompile Include="..\..\..\src\burp\domain_remap.cpp">
+      <Filter>BURP files</Filter>
+    </ClCompile>
     <ClCompile Include="..\..\..\src\burp\misc.cpp">
       <Filter>BURP files</Filter>
     </ClCompile>

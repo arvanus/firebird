@@ -138,6 +138,7 @@
     <ClCompile Include="..\..\..\src\burp\burp.cpp" />
     <ClCompile Include="..\..\..\src\burp\BurpTasks.cpp" />
     <ClCompile Include="..\..\..\src\burp\canonical.cpp" />
+    <ClCompile Include="..\..\..\src\burp\domain_remap.cpp" />
     <ClCompile Include="..\..\..\src\burp\misc.cpp" />
     <ClCompile Include="..\..\..\src\burp\mvol.cpp" />
     <ClCompile Include="..\..\..\gen\burp\backup.cpp" />

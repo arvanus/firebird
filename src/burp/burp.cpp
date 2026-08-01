@@ -878,6 +878,16 @@ int gbak(Firebird::UtilSvc* uSvc)
 			}
 			tdgbl->gbl_sw_fix_fss_metadata = argv[itr];
 			break;
+		case IN_SW_BURP_FIX_DOMAINS:
+			if (tdgbl->gbl_sw_fix_domains)
+				BURP_error(333, true, SafeArg() << in_sw_tab->in_sw_name << tdgbl->gbl_sw_fix_domains);
+			if (++itr >= argc)
+			{
+				BURP_error(412, true);
+				// msg 412 domain remap rules parameter missing
+			}
+			tdgbl->gbl_sw_fix_domains = argv[itr];
+			break;
 		case IN_SW_BURP_SE:
 			if (++itr >= argc)
 			{
@@ -1323,6 +1333,8 @@ int gbak(Firebird::UtilSvc* uSvc)
 			errNum = IN_SW_BURP_FIX_FSS_DATA;
 		else if (tdgbl->gbl_sw_fix_fss_metadata)
 			errNum = IN_SW_BURP_FIX_FSS_METADATA;
+		else if (tdgbl->gbl_sw_fix_domains)
+			errNum = IN_SW_BURP_FIX_DOMAINS;
 		else if (tdgbl->gbl_sw_deactivate_indexes)
 			errNum = IN_SW_BURP_I;
 		else if (tdgbl->gbl_sw_kill)
@@ -1381,6 +1393,22 @@ int gbak(Firebird::UtilSvc* uSvc)
 		{
 			const char* msg = switches.findNameByTag(errNum);
 			BURP_error(331, true, SafeArg() << msg);
+		}
+	}
+
+	if (tdgbl->gbl_sw_fix_domains)
+	{
+		tdgbl->gbl_domain_remap = FB_NEW_POOL(*getDefaultMemoryPool())
+			Burp::DomainRemap(*getDefaultMemoryPool());
+
+		try
+		{
+			tdgbl->gbl_domain_remap->parse(tdgbl->gbl_sw_fix_domains);
+		}
+		catch (const Burp::DomainRemapError& ex)
+		{
+			BURP_error(413, true, SafeArg() << ex.message.c_str());
+			// msg 413 invalid domain remap rules: @1
 		}
 	}
 
