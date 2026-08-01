@@ -110,6 +110,9 @@ enum scan_attr_t
 
 void	add_access_dpb(BurpGlobals* tdgbl, Firebird::ClumpletWriter& dpb);
 void	add_files(BurpGlobals* tdgbl, const char*);
+static bool	apply_domain_remap(BurpGlobals* tdgbl, const char* fieldName, size_t nameSize,
+	SSHORT& fieldType, SSHORT& fieldLength, SSHORT& fieldScale, SSHORT& fieldSubType,
+	SSHORT& charLength, bool& precisionNull);
 void	bad_attribute(scan_attr_t, att_type, USHORT);
 void	create_database(BurpGlobals* tdgbl, Firebird::IProvider*, const TEXT*);
 void	decompress(BurpGlobals* tdgbl, UCHAR*, ULONG);
@@ -5396,6 +5399,100 @@ bool get_generator(BurpGlobals* tdgbl)
 	return true;
 }
 
+static bool apply_domain_remap(BurpGlobals* tdgbl,
+							   const char* fieldName,
+							   size_t nameSize,
+							   SSHORT& fieldType,
+							   SSHORT& fieldLength,
+							   SSHORT& fieldScale,
+							   SSHORT& fieldSubType,
+							   SSHORT& charLength,
+							   bool& precisionNull)
+{
+/**************************************
+ *
+ *	a p p l y _ d o m a i n _ r e m a p
+ *
+ **************************************
+ *
+ * Functional description
+ *	Redefine a global field according to the -FIX_DOMAINS rules.
+ *	Character set and collation are left at their defaults here and
+ *	resolved by name later, once the backup's collations have been
+ *	restored. Returns true when a rule matched.
+ *
+ **************************************/
+	if (!tdgbl->gbl_domain_remap)
+		return false;
+
+	// GPRE declares RDB$FIELD_NAME as a null terminated string in a buffer of
+	// nameSize bytes, so everything past the terminator is whatever the stack
+	// happened to hold. MISC_symbol_length gives the real length of the name.
+	const size_t nameLength = (size_t) MISC_symbol_length(fieldName, (ULONG) nameSize);
+
+	Burp::RemapRule* const rule = tdgbl->gbl_domain_remap->findRule(fieldName, nameLength);
+
+	if (!rule)
+		return false;
+
+	// A domain already in the target shape means the rules do not match the
+	// backup, and silently doing nothing would hide that.
+	const UCHAR currentType = (fieldType == blr_varying || fieldType == blr_text) ?
+		(UCHAR) fieldType : 0;
+
+	if (currentType == rule->blrType)
+	{
+		BURP_error(413, true, SafeArg() <<
+			"domain is already in the target type, refusing to remap");
+	}
+
+	// Same minimum width the DDL enforces in AlterDomainNode::checkUpdate.
+	// RDB$FIELD_TYPE holds a BLR type code, so let DSC_make_descriptor do the
+	// mapping: hand rolling it would get every type but the two obvious ones
+	// wrong, and a too small minimum silently allows truncation.
+	dsc desc;
+
+	if (!DSC_make_descriptor(&desc, (USHORT) fieldType, (SSHORT) fieldScale,
+			(USHORT) fieldLength, (SSHORT) fieldSubType, 0, 0))
+	{
+		Firebird::string msg;
+		msg.printf("cannot describe the source type of domain %s",
+			rule->domainName.c_str());
+		BURP_error(413, true, SafeArg() << msg.c_str());
+	}
+
+	const USHORT minimum = (USHORT) DSC_string_length(&desc);
+
+	if (rule->charLength < minimum)
+	{
+		if (rule->uncheckedWidth)
+		{
+			// The operator asked for a narrower type than the DDL would allow.
+			// Any value that does not fit fails later, while data is loading.
+			BURP_print(false, 419, SafeArg() << rule->domainName.c_str() <<
+				(int) rule->charLength << (int) minimum);
+			// msg 419 domain @1 target width @2 is below the @3 the DDL requires, UNCHECKED was given
+		}
+		else
+		{
+			Firebird::string msg;
+			msg.printf("new size for domain %s must be at least %d characters, or add UNCHECKED",
+				rule->domainName.c_str(), minimum);
+			BURP_error(413, true, SafeArg() << msg.c_str());
+		}
+	}
+
+	fieldType = rule->blrType;
+	fieldLength = rule->charLength;
+	charLength = rule->charLength;
+	fieldScale = 0;
+	fieldSubType = 0;
+	precisionNull = true;
+	rule->applied = true;
+
+	return true;
+}
+
 bool get_global_field(BurpGlobals* tdgbl)
 {
 /**************************************
@@ -5781,6 +5878,32 @@ bool get_global_field(BurpGlobals* tdgbl)
 				X.RDB$COLLATION_ID = 0;
 			}
 
+			{
+				// Copy into locals first: the X.RDB$* fields are members of a
+				// GPRE generated struct and cannot be bound to a reference.
+				SSHORT remapType = X.RDB$FIELD_TYPE;
+				SSHORT remapLength = X.RDB$FIELD_LENGTH;
+				SSHORT remapScale = X.RDB$FIELD_SCALE;
+				SSHORT remapSubType = X.RDB$FIELD_SUB_TYPE;
+				SSHORT remapCharLength = X.RDB$CHARACTER_LENGTH;
+				bool remapPrecisionNull = X.RDB$FIELD_PRECISION.NULL;
+
+				if (apply_domain_remap(tdgbl, X.RDB$FIELD_NAME, sizeof(X.RDB$FIELD_NAME),
+						remapType, remapLength, remapScale, remapSubType,
+						remapCharLength, remapPrecisionNull))
+				{
+					X.RDB$FIELD_TYPE = remapType;
+					X.RDB$FIELD_LENGTH = remapLength;
+					X.RDB$FIELD_SCALE = remapScale;
+					X.RDB$FIELD_SCALE.NULL = FALSE;
+					X.RDB$FIELD_SUB_TYPE = remapSubType;
+					X.RDB$FIELD_SUB_TYPE.NULL = FALSE;
+					X.RDB$CHARACTER_LENGTH = remapCharLength;
+					X.RDB$CHARACTER_LENGTH.NULL = FALSE;
+					X.RDB$FIELD_PRECISION.NULL = remapPrecisionNull;
+				}
+			}
+
 		END_STORE;
 		ON_ERROR
 			general_on_error ();
@@ -6132,6 +6255,32 @@ bool get_global_field(BurpGlobals* tdgbl)
 				X.RDB$COLLATION_ID = 0;
 			}
 
+			{
+				// Copy into locals first: the X.RDB$* fields are members of a
+				// GPRE generated struct and cannot be bound to a reference.
+				SSHORT remapType = X.RDB$FIELD_TYPE;
+				SSHORT remapLength = X.RDB$FIELD_LENGTH;
+				SSHORT remapScale = X.RDB$FIELD_SCALE;
+				SSHORT remapSubType = X.RDB$FIELD_SUB_TYPE;
+				SSHORT remapCharLength = X.RDB$CHARACTER_LENGTH;
+				bool remapPrecisionNull = X.RDB$FIELD_PRECISION.NULL;
+
+				if (apply_domain_remap(tdgbl, X.RDB$FIELD_NAME, sizeof(X.RDB$FIELD_NAME),
+						remapType, remapLength, remapScale, remapSubType,
+						remapCharLength, remapPrecisionNull))
+				{
+					X.RDB$FIELD_TYPE = remapType;
+					X.RDB$FIELD_LENGTH = remapLength;
+					X.RDB$FIELD_SCALE = remapScale;
+					X.RDB$FIELD_SCALE.NULL = FALSE;
+					X.RDB$FIELD_SUB_TYPE = remapSubType;
+					X.RDB$FIELD_SUB_TYPE.NULL = FALSE;
+					X.RDB$CHARACTER_LENGTH = remapCharLength;
+					X.RDB$CHARACTER_LENGTH.NULL = FALSE;
+					X.RDB$FIELD_PRECISION.NULL = remapPrecisionNull;
+				}
+			}
+
 		END_STORE;
 		ON_ERROR
 			general_on_error ();
@@ -6477,6 +6626,33 @@ bool get_global_field(BurpGlobals* tdgbl)
 
 				X.RDB$CHARACTER_SET_ID = CS_NONE;
 				X.RDB$COLLATION_ID = 0;
+			}
+
+			{
+				// Copy into locals first: the X.RDB$* fields are members of a
+				// GPRE generated struct and cannot be bound to a reference.
+				// This branch stores no RDB$FIELD_PRECISION, so the null flag is
+				// a dummy that is written by the helper and never stored back.
+				SSHORT remapType = X.RDB$FIELD_TYPE;
+				SSHORT remapLength = X.RDB$FIELD_LENGTH;
+				SSHORT remapScale = X.RDB$FIELD_SCALE;
+				SSHORT remapSubType = X.RDB$FIELD_SUB_TYPE;
+				SSHORT remapCharLength = X.RDB$CHARACTER_LENGTH;
+				bool remapPrecisionNull = true;
+
+				if (apply_domain_remap(tdgbl, X.RDB$FIELD_NAME, sizeof(X.RDB$FIELD_NAME),
+						remapType, remapLength, remapScale, remapSubType,
+						remapCharLength, remapPrecisionNull))
+				{
+					X.RDB$FIELD_TYPE = remapType;
+					X.RDB$FIELD_LENGTH = remapLength;
+					X.RDB$FIELD_SCALE = remapScale;
+					X.RDB$FIELD_SCALE.NULL = FALSE;
+					X.RDB$FIELD_SUB_TYPE = remapSubType;
+					X.RDB$FIELD_SUB_TYPE.NULL = FALSE;
+					X.RDB$CHARACTER_LENGTH = remapCharLength;
+					X.RDB$CHARACTER_LENGTH.NULL = FALSE;
+				}
 			}
 
 		END_STORE;
