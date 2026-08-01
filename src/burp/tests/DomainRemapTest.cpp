@@ -1,7 +1,9 @@
 #include "firebird.h"
 #include "boost/test/unit_test.hpp"
 #include "../burp/domain_remap.h"
+#include "../common/classes/TempFile.h"
 #include "firebird/impl/blr.h"
+#include <stdio.h>
 
 using namespace Firebird;
 using namespace Burp;
@@ -104,6 +106,65 @@ BOOST_AUTO_TEST_CASE(ParseUncheckedFlag)
 	BOOST_TEST(remap.rule(0).uncheckedWidth == true);
 	BOOST_TEST((remap.rule(0).collationName == "PT_BR"));
 	BOOST_TEST(remap.rule(1).uncheckedWidth == false);
+}
+
+
+BOOST_AUTO_TEST_CASE(LoadFileHandlesLineLongerThanBuffer)
+{
+	// loadFile() reads in 1024 byte chunks. Pad the collation name well past
+	// three chunk boundaries, so a naive per-chunk reassembly would inject
+	// stray newlines in the middle of the rule and break it in two.
+	const size_t padLength = 2600;
+	string padding;
+
+	for (size_t i = 0; i < padLength; ++i)
+		padding += 'X';
+
+	const PathName path = TempFile::create("fbtest");
+	BOOST_REQUIRE(path.hasData());
+
+	FILE* const file = fopen(path.c_str(), "wt");
+	BOOST_REQUIRE(file != nullptr);
+
+	fprintf(file, "LONGRULE = VARCHAR(20) COLLATE %s\nSHORT = CHAR(5)\n", padding.c_str());
+	fclose(file);
+
+	string spec;
+	spec.printf("@%s", path.c_str());
+
+	DomainRemap remap;
+	remap.parse(spec.c_str());
+
+	remove(path.c_str());
+
+	BOOST_TEST(remap.ruleCount() == 2u);
+	BOOST_TEST((remap.rule(0).domainName == "LONGRULE"));
+	BOOST_TEST(remap.rule(0).collationName.length() == padLength);
+	BOOST_TEST((remap.rule(0).collationName == padding));
+	BOOST_TEST((remap.rule(1).domainName == "SHORT"));
+}
+
+BOOST_AUTO_TEST_CASE(ParseReplacesRulesFromPreviousCall)
+{
+	DomainRemap remap;
+	remap.parse("A = CHAR(5); B = CHAR(6)");
+	BOOST_TEST(remap.ruleCount() == 2u);
+
+	remap.parse("C = CHAR(7)");
+
+	BOOST_TEST(remap.ruleCount() == 1u);
+	BOOST_TEST((remap.rule(0).domainName == "C"));
+}
+
+BOOST_AUTO_TEST_CASE(ParseClearsPartialRulesAfterThrow)
+{
+	DomainRemap remap;
+	BOOST_CHECK_THROW(remap.parse("A = CHAR(5); B = INTEGER"), DomainRemapError);
+
+	remap.parse("C = CHAR(7)");
+
+	BOOST_TEST(remap.ruleCount() == 1u);
+	BOOST_TEST((remap.rule(0).domainName == "C"));
 }
 
 

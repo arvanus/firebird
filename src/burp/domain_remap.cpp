@@ -66,6 +66,10 @@ namespace Burp {
 
 void DomainRemap::parse(const char* spec)
 {
+	// Each call replaces any rules from a previous call, and leaves nothing
+	// behind if this call itself throws partway through.
+	m_rules.clear();
+
 	string text;
 
 	if (spec && spec[0] == '@')
@@ -93,12 +97,17 @@ void DomainRemap::loadFile(const char* path, string& text)
 	char buffer[1024];
 
 	while (fgets(buffer, sizeof(buffer), file))
-	{
 		text += buffer;
-		text += '\n';
-	}
 
 	fclose(file);
+
+	// fgets keeps the newline it read, if any. A line longer than the buffer
+	// is delivered as several chunks with no newline in between, so nothing
+	// may be inserted between chunks - that would cut one rule into two
+	// malformed fragments. Only a file whose last line has no trailing
+	// newline needs one added, so the last rule is properly terminated.
+	if (text.hasData() && text[text.length() - 1] != '\n')
+		text += '\n';
 }
 
 void DomainRemap::parseRules(const string& text)
