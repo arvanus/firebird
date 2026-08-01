@@ -960,9 +960,15 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 		SSHORT collationId = 0;
 		bool charsetFound = rule.charsetName.isEmpty();
 
+		// Handles locais mais MISC_release_request_silent: e o padrao usado
+		// pela resolucao de charset do FIX_FSS em restore.epp:10577, e nao
+		// membros de BurpGlobals, que servem para handles reaproveitados a
+		// cada registro do backup.
 		if (!charsetFound)
 		{
-			FOR (REQUEST_HANDLE tdgbl->handles_resolve_charset_req_handle1)
+			Firebird::IRequest* req_charset = nullptr;
+
+			FOR (REQUEST_HANDLE req_charset)
 				CS IN RDB$CHARACTER_SETS
 				WITH CS.RDB$CHARACTER_SET_NAME EQ rule.charsetName.c_str()
 
@@ -972,6 +978,8 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 			ON_ERROR
 				general_on_error();
 			END_ERROR;
+
+			MISC_release_request_silent(req_charset);
 
 			if (!charsetFound)
 			{
@@ -984,8 +992,9 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 		if (rule.collationName.hasData())
 		{
 			bool collationFound = false;
+			Firebird::IRequest* req_collation = nullptr;
 
-			FOR (REQUEST_HANDLE tdgbl->handles_resolve_collation_req_handle1)
+			FOR (REQUEST_HANDLE req_collation)
 				CL IN RDB$COLLATIONS
 				WITH CL.RDB$COLLATION_NAME EQ rule.collationName.c_str()
 
@@ -1000,6 +1009,8 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 				general_on_error();
 			END_ERROR;
 
+			MISC_release_request_silent(req_collation);
+
 			if (!collationFound)
 			{
 				BURP_error(416, true, SafeArg() << "collation" <<
@@ -1008,8 +1019,9 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 		}
 
 		unsigned touched = 0;
+		Firebird::IRequest* req_field = nullptr;
 
-		FOR (REQUEST_HANDLE tdgbl->handles_resolve_field_req_handle1)
+		FOR (REQUEST_HANDLE req_field)
 			X IN RDB$FIELDS
 			WITH X.RDB$FIELD_NAME EQ rule.domainName.c_str()
 
@@ -1025,6 +1037,8 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 		ON_ERROR
 			general_on_error();
 		END_ERROR;
+
+		MISC_release_request_silent(req_field);
 
 		if (touched != 1)
 		{
@@ -1053,14 +1067,20 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 }
 ```
 
-Declare os três handles de request em `src/burp/burp.h`, junto dos demais `handles_*`, e o flag:
+Declare apenas o flag em `src/burp/burp.h`, junto dos demais `gbl_sw_*`. Os handles são locais, então
+não entram em `BurpGlobals`:
 
 ```cpp
-	Firebird::IRequest*	handles_resolve_charset_req_handle1;
-	Firebird::IRequest*	handles_resolve_collation_req_handle1;
-	Firebird::IRequest*	handles_resolve_field_req_handle1;
 	bool				gbl_domain_remap_done;
 ```
+
+Padrão de referência para toda a função: `restore.epp:10577-10600`, onde o `FIX_FSS_DATA` resolve o
+nome do charset para id. Mesma forma de `FOR ... WITH ... EQ name.c_str()`, mesmo flag `found`, mesmo
+`MISC_release_request_silent` no fim.
+
+Sobre as mensagens: já existe a msg 305, `"Character set @1 not found"`. Ela não é usada aqui porque
+a 416 nomeia também o domínio da regra, o que é o que o operador precisa para saber qual linha do
+arquivo corrigir, e serve tanto para charset quanto para collation.
 
 - [ ] **Step 2: Chamar nos três pontos**
 
@@ -1195,8 +1215,9 @@ static void report_remap_overrides(BurpGlobals* tdgbl)
 	for (unsigned i = 0; i < remap.ruleCount(); ++i)
 	{
 		const Burp::RemapRule& rule = remap.rule(i);
+		Firebird::IRequest* req_override = nullptr;
 
-		FOR (REQUEST_HANDLE tdgbl->handles_remap_override_req_handle1)
+		FOR (REQUEST_HANDLE req_override)
 			RFR IN RDB$RELATION_FIELDS
 			WITH RFR.RDB$FIELD_SOURCE EQ rule.domainName.c_str()
 			AND RFR.RDB$COLLATION_ID NOT MISSING
@@ -1208,6 +1229,8 @@ static void report_remap_overrides(BurpGlobals* tdgbl)
 		ON_ERROR
 			general_on_error();
 		END_ERROR;
+
+		MISC_release_request_silent(req_override);
 	}
 }
 ```
@@ -1216,12 +1239,6 @@ Acrescente a mensagem em `src/include/firebird/impl/msg/gbak.h`:
 
 ```c
 FB_IMPL_MSG_NO_SYMBOL(GBAK, 418, "column @1.@2 keeps its own collation and does not follow domain @3")
-```
-
-E o handle em `src/burp/burp.h`, junto dos outros:
-
-```cpp
-	Firebird::IRequest*	handles_remap_override_req_handle1;
 ```
 
 Chame `report_remap_overrides(tdgbl)` no fim do restore, depois do commit final dos metadados.
@@ -1239,7 +1256,7 @@ Crie `doc/README.fix_domains.md` cobrindo: o que o switch faz, formato das regra
 - [ ] **Step 5: Commit**
 
 ```bash
-git add doc/README.fix_domains.md src/burp/restore.epp src/burp/burp.h src/include/firebird/impl/msg/gbak.h
+git add doc/README.fix_domains.md src/burp/restore.epp src/include/firebird/impl/msg/gbak.h
 git commit -m "feat(burp): report columns overriding a remapped domain collation"
 ```
 
@@ -1276,6 +1293,7 @@ git push fork srs/fb5-custom
 ## Notas para quem for executar
 
 - O arquivo `src/burp/restore.epp` tem mais de 12 mil linhas. As referências de linha deste plano valem para a árvore em `v5.0-release`; confirme pelo contexto ao redor, não só pelo número.
+- APIs usadas nos exemplos, todas conferidas na árvore: `Firebird::string::upper()` (`fb_string.h:406`), `BURP_verbose(USHORT, const SafeArg&)` (`burp_proto.h:51`), `BURP_print(bool, USHORT, const SafeArg&)` (`burp.cpp:1715`), `BURP_error(USHORT, bool, const SafeArg&)` (`burp.cpp:1556`), `DSC_string_length(const dsc*)` (`dsc_proto.h:29`), `os_utils::fopen` (`os_utils.h:89`), `ObjectsArray::add(const T&)` (`objects_array.h:211`), `SafeArg::operator<<` para `int`, `unsigned int` e `const char*` (`SafeArg.h:154-162`). `NOT MISSING` em cláusula `WITH` é GPRE válido (`backup.epp:4044`), e comparar com `.c_str()` dentro de `WITH ... EQ` também (`restore.epp:10587`).
 - Os arquivos `.epp` passam por GPRE. Erros de sintaxe em blocos `FOR`, `STORE` e `MODIFY` aparecem como erros no `.cpp` gerado dentro de `gen/burp/`; sempre corrija o `.epp`.
 - A referência do hack original é o commit `acd92753b7` na branch `gbak_hacked` (também em `fork/gbak_hacked`). Serve de consulta, mas nada dele deve ser copiado: o bloco de debug com `BURP_verbose(121, ...)`, o `strncmp` com tamanho literal e os ids numéricos ficam todos de fora.
 - Riscos conhecidos e deliberadamente não validados em código (arrays, identity, FK remapeada de um lado só, views de expressão) estão na seção 12 da spec. Se algum deles for promovido a validação, o candidato mais forte é a FK, porque falha depois do carregamento completo dos dados.

@@ -422,7 +422,8 @@ detecção de FK inconsistente.
 - Interação com `-PAR`: metadados são processados serialmente e os workers paralelos atuam sobre
   dados (`src/burp/BurpTasks.cpp:889` copia `runtimeODS` do master), então o remap não deve ser
   afetado. Confirmar com um restore `-PAR 5` real.
-- Se existe no `restore.epp` algum passe de correção posterior sobre system tables que sirva de
-  padrão para a resolução, e segui-lo caso exista.
+- Padrão de referência para a resolução: confirmado que existe. `restore.epp:10577-10600` resolve o
+  nome do charset do `FIX_FSS_DATA` para id com `FOR ... WITH ... EQ name.c_str()`, handle local e
+  `MISC_release_request_silent` no fim. A resolução deste recurso segue a mesma forma.
 - Sob `-m`, confirmar quais dos três pontos de resolução são efetivamente alcançados, para garantir
   que o preview aborte com a mesma severidade do restore completo.
