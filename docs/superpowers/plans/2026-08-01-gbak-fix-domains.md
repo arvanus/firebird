@@ -13,7 +13,7 @@
 - Spec de referência: `docs/superpowers/specs/2026-08-01-gbak-domain-remap-design.md`. Leia antes de começar.
 - Branch de trabalho: `srs/gbak-domain-remap`, criada a partir de `v5.0-release`.
 - Sem travessão (`—`) nem traço médio (`–`) em nenhum texto gerado: código, comentários, mensagens, docs, commits. Usar hífen simples.
-- Mensagens de commit e comentários de código em inglês, seguindo o padrão do repositório.
+- **Todo código, comentário de código, nome de identificador, mensagem do catálogo e mensagem de commit em inglês**, seguindo o padrão do repositório. O Firebird é projeto internacional e nenhum arquivo de código tem português. Conversa com o usuário é em português; o que entra no repositório, não.
 - Nenhuma mensagem existente do catálogo pode ser reaproveitada para texto novo. O hack original abusava da msg 121 (`"restoring domain @1"`); isso não se repete.
 - Nada de números literais de charset ou collation no código nem nas regras. Sempre nome.
 - Tipos alvo usam `blr_varying` e `blr_text`, nunca o literal `37`.
@@ -781,13 +781,21 @@ static bool apply_domain_remap(BurpGlobals* tdgbl,
 	}
 
 	// Same minimum width the DDL enforces in AlterDomainNode::checkUpdate.
+	// RDB$FIELD_TYPE holds a BLR type code, so let DSC_make_descriptor do the
+	// mapping: hand rolling it would get every type but the two obvious ones
+	// wrong, and a too small minimum silently allows truncation.
 	dsc desc;
-	desc.clear();
-	desc.dsc_dtype = (fieldType == blr_int64) ? dtype_int64 : dtype_long;
-	desc.dsc_length = fieldLength;
-	desc.dsc_scale = (SCHAR) fieldScale;
 
-	const USHORT minimum = DSC_string_length(&desc);
+	if (!DSC_make_descriptor(&desc, (USHORT) fieldType, (SSHORT) fieldScale,
+			(USHORT) fieldLength, (SSHORT) fieldSubType, 0, 0))
+	{
+		Firebird::string msg;
+		msg.printf("cannot describe the source type of domain %s",
+			rule->domainName.c_str());
+		BURP_error(413, true, SafeArg() << msg.c_str());
+	}
+
+	const USHORT minimum = (USHORT) DSC_string_length(&desc);
 
 	if (rule->charLength < minimum)
 	{
@@ -828,8 +836,8 @@ Em cada um dos três blocos `STORE ... X IN RDB$FIELDS` de `get_global_field`, i
 
 ```cpp
 		{
-			// Copie para locais antes de chamar: os campos de X sao membros de
-			// struct gerada pelo GPRE e nao podem ser vinculados a referencia.
+			// Copy into locals first: the X.RDB$* fields are members of a
+			// GPRE generated struct and cannot be bound to a reference.
 			SSHORT remapType = X.RDB$FIELD_TYPE;
 			SSHORT remapLength = X.RDB$FIELD_LENGTH;
 			SSHORT remapScale = X.RDB$FIELD_SCALE;
@@ -960,10 +968,10 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 		SSHORT collationId = 0;
 		bool charsetFound = rule.charsetName.isEmpty();
 
-		// Handles locais mais MISC_release_request_silent: e o padrao usado
-		// pela resolucao de charset do FIX_FSS em restore.epp:10577, e nao
-		// membros de BurpGlobals, que servem para handles reaproveitados a
-		// cada registro do backup.
+		// Local handles plus MISC_release_request_silent: this is the pattern
+		// the FIX_FSS charset resolution uses at restore.epp:10577. BurpGlobals
+		// members are for handles reused on every backup record, not for a
+		// one shot lookup.
 		if (!charsetFound)
 		{
 			Firebird::IRequest* req_charset = nullptr;
