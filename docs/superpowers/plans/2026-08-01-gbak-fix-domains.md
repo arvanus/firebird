@@ -28,7 +28,7 @@ Use estes valores. Foram conferidos na árvore atual e estão livres:
 |---|---|---|
 | Id do switch | `IN_SW_BURP_FIX_DOMAINS = 56` | `src/burp/burpswi.h` (último usado é 55, `IN_SW_BURP_DIRECT_IO`) |
 | Constante de serviço | `isc_spb_res_fix_domains = 21` | `src/include/firebird/impl/consts_pub.h` (último usado é 20, `isc_spb_res_replica_mode`) |
-| Mensagens novas | 411 a 418 | `src/include/firebird/impl/msg/gbak.h` (última usada é 410) |
+| Mensagens novas | 411 a 419 | `src/include/firebird/impl/msg/gbak.h` (última usada é 410) |
 
 ## Estrutura de arquivos
 
@@ -164,6 +164,16 @@ BOOST_AUTO_TEST_CASE(DomainNameIsCaseInsensitive)
 	BOOST_TEST(remap.rule(0).domainName == "TDR_CNPJ");
 }
 
+BOOST_AUTO_TEST_CASE(ParseUncheckedFlag)
+{
+	DomainRemap remap;
+	remap.parse("A = VARCHAR(17) COLLATE PT_BR UNCHECKED; B = VARCHAR(20)");
+
+	BOOST_TEST(remap.rule(0).uncheckedWidth == true);
+	BOOST_TEST(remap.rule(0).collationName == "PT_BR");
+	BOOST_TEST(remap.rule(1).uncheckedWidth == false);
+}
+
 
 BOOST_AUTO_TEST_SUITE_END()
 BOOST_AUTO_TEST_SUITE_END()
@@ -216,7 +226,7 @@ public:
 struct RemapRule
 {
 	RemapRule()
-		: blrType(0), charLength(0), applied(false)
+		: blrType(0), charLength(0), uncheckedWidth(false), applied(false)
 	{
 	}
 
@@ -225,6 +235,7 @@ struct RemapRule
 	USHORT				charLength;		// characters, not bytes
 	Firebird::string	charsetName;	// empty means database default
 	Firebird::string	collationName;	// empty means charset default
+	bool				uncheckedWidth;	// UNCHECKED: skip the DDL minimum width rule
 	bool				applied;		// set when get_global_field matched it
 };
 
@@ -515,6 +526,11 @@ void DomainRemap::parseOneRule(const string& line)
 			rule.collationName = tokens[pos + 1];
 			pos += 2;
 		}
+		else if (tokens[pos] == "UNCHECKED")
+		{
+			rule.uncheckedWidth = true;
+			++pos;
+		}
 		else
 		{
 			string msg;
@@ -594,7 +610,10 @@ FB_IMPL_MSG_NO_SYMBOL(GBAK, 414, "remapping domain @1 to @2")
 FB_IMPL_MSG_SYMBOL(GBAK, 415, gbak_domain_not_found, "domain @1 from remap rules was not found in the backup")
 FB_IMPL_MSG_SYMBOL(GBAK, 416, gbak_domain_name_unresolved, "cannot resolve @1 @2 for domain @3")
 FB_IMPL_MSG_NO_SYMBOL(GBAK, 417, "remapped @1 domain(s), @2 rule(s) given")
+FB_IMPL_MSG_NO_SYMBOL(GBAK, 419, "domain @1 target width @2 is below the @3 the DDL requires, UNCHECKED was given")
 ```
+
+A msg 418 é adicionada na Task 5, junto do relatório que a usa.
 
 Nota sobre a 411: o `@1` é o prefixo de switch que o gbak injeta em todas as linhas de ajuda (veja as msgs 406 e 409 como modelo), e o `@2` recebe o literal `@` do exemplo de uso.
 
@@ -772,10 +791,21 @@ static bool apply_domain_remap(BurpGlobals* tdgbl,
 
 	if (rule->charLength < minimum)
 	{
-		Firebird::string msg;
-		msg.printf("new size for domain %s must be at least %d characters",
-			rule->domainName.c_str(), minimum);
-		BURP_error(413, true, SafeArg() << msg.c_str());
+		if (rule->uncheckedWidth)
+		{
+			// The operator asked for a narrower type than the DDL would allow.
+			// Any value that does not fit fails later, while data is loading.
+			BURP_print(false, 419, SafeArg() << rule->domainName.c_str() <<
+				(int) rule->charLength << (int) minimum);
+			// msg 419 domain @1 target width @2 is below the @3 the DDL requires, UNCHECKED was given
+		}
+		else
+		{
+			Firebird::string msg;
+			msg.printf("new size for domain %s must be at least %d characters, or add UNCHECKED",
+				rule->domainName.c_str(), minimum);
+			BURP_error(413, true, SafeArg() << msg.c_str());
+		}
 	}
 
 	fieldType = rule->blrType;
@@ -859,7 +889,13 @@ SELECT V FROM T WHERE ID = 1;
 Expected: `RDB$FIELD_TYPE` = 37, `RDB$FIELD_LENGTH` = 20, e `V` retorna `123` como texto.
 
 Run também: `gbak.exe -c d:\u\banco\remap.fbk d:\u\banco\x.fdb -FIX_DOMAINS "TDR_TESTE = VARCHAR(17)"`
-Expected: erro "new size for domain TDR_TESTE must be at least 20 characters".
+Expected: erro "new size for domain TDR_TESTE must be at least 20 characters, or add UNCHECKED".
+
+Run: `gbak.exe -c d:\u\banco\remap.fbk d:\u\banco\y.fdb -FIX_DOMAINS "TDR_TESTE = VARCHAR(17) UNCHECKED"`
+Expected: aviso da msg 419 e restore concluído, com `RDB$FIELD_LENGTH` = 17.
+
+Run, para confirmar que a falha tardia é real e legível: repita o `UNCHECKED` com largura absurdamente pequena, por exemplo `VARCHAR(2)`, sobre um valor que não caiba.
+Expected: o restore chega a carregar dados e aborta com erro de conversão do engine, não com erro do remap. É esse o custo do override.
 
 - [ ] **Step 5: Commit**
 

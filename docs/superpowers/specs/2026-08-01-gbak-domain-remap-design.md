@@ -166,6 +166,33 @@ column TDR_CNPJ must be at least 20 characters"; com `VARCHAR(20)` mais o `CHECK
 Se o domínio de origem já traz `RDB$VALIDATION_BLR` numérico (seção 12.3), remover a constraint
 antiga antes de adicionar a nova.
 
+Verificado também que a largura não impede integridade referencial: uma FK entre coluna
+`VARCHAR(17)` e coluna `VARCHAR(20)` de mesmo charset e collation é criada e opera normalmente. O
+que a FK compara é o `idx_itype`, não o comprimento. Portanto manter `VARCHAR(20)` não quebra
+convivência com um domínio modelo de 17.
+
+### 5.2.2 Override UNCHECKED
+
+O gbak nunca chama `checkUpdate`, porque grava direto em `RDB$FIELDS`. A regra de largura mínima é,
+portanto, uma salvaguarda deste recurso, e não uma restrição herdada do caminho DDL. A palavra-chave
+`UNCHECKED` ao fim de uma regra a desliga para aquela regra:
+
+```
+TDR_CNPJ = VARCHAR(17) CHARACTER SET ISO8859_1 COLLATE ISO8859_1_LTRIM_ZERO_AI UNCHECKED
+```
+
+Quando usada, o gbak emite aviso identificando o domínio, a largura pedida e a mínima que o DDL
+exigiria, e prossegue. Duas consequências que precisam estar claras para quem usa:
+
+- A objeção da seção 12.2 volta a valer para as regras que levam `UNCHECKED`: o domínio resultante é
+  um estado que `ALTER DOMAIN` recusaria.
+- O truncamento passa a ser descoberto tarde. Um valor que não caiba falha durante o carregamento
+  dos dados, com erro de conversão do engine, e não na validação das regras. Em backup grande, isso
+  significa perder o trabalho de várias horas.
+
+A recomendação continua sendo declarar a largura mínima e restringir o conteúdo por constraint. O
+`UNCHECKED` existe para o caso em que o operador conhece os dados e quer o tipo estreito assim mesmo.
+
 ### 5.3 Preview
 
 Não há switch de dry-run. O `-m` (metadata only) que já existe cumpre o papel:
@@ -325,9 +352,10 @@ conversão e não do mecanismo de BLR.
 
 ### 12.2 Conversão que o próprio engine recusa (resolvido na seção 5.2.1)
 
-**Status: mitigado.** A regra de largura mínima da seção 5.2.1 adota exatamente o limite do
-`checkUpdate`, então o recurso deixa de fazer o que o DDL proíbe. O texto abaixo fica como registro
-do problema e do porquê da regra existir.
+**Status: mitigado por padrão.** A regra de largura mínima da seção 5.2.1 adota exatamente o limite
+do `checkUpdate`, então o recurso deixa de fazer o que o DDL proíbe, exceto nas regras que pedirem
+`UNCHECKED` explicitamente (seção 5.2.2). O texto abaixo fica como registro do problema e do porquê
+da regra existir.
 
 
 `AlterDomainNode::checkUpdate` (`src/dsql/DdlNodes.epp:4441-4442`) calcula, para tipo de origem não
@@ -369,8 +397,13 @@ metadados. Se alguma validação for adicionada apesar da decisão de escopo mí
 ### 12.4 Efeito sobre a ambição upstream
 
 A objeção concreta era 12.2: o recurso produziria metadados que o DDL do produto se recusa a criar.
-Com a regra de largura mínima da seção 5.2.1, isso deixa de valer, e todo domínio remapeado passa a
-ser um estado que um `ALTER DOMAIN` alcançaria. O PR volta a ser defensável.
+Com a regra de largura mínima da seção 5.2.1, isso deixa de valer no comportamento padrão, e todo
+domínio remapeado passa a ser um estado que um `ALTER DOMAIN` alcançaria. O PR volta a ser
+defensável.
+
+O `UNCHECKED` da seção 5.2.2 é a parte que um mantenedor questionaria, por ser justamente um escape
+da salvaguarda. Se ele for obstáculo na revisão, é removível sem tocar no resto do desenho: é uma
+flag na regra e um ramo em `apply_domain_remap`.
 
 Resta a objeção de princípio: o restore deixa de ser fiel ao backup, e `FIX_FSS_*` não é paralelo
 perfeito, já que aqueles corrigem rótulo de charset de dados malformados por bug histórico do próprio
