@@ -27,8 +27,19 @@ Use estes valores. Foram conferidos na árvore atual e estão livres:
 | O que | Valor | Onde fica |
 |---|---|---|
 | Id do switch | `IN_SW_BURP_FIX_DOMAINS = 56` | `src/burp/burpswi.h` (último usado é 55, `IN_SW_BURP_DIRECT_IO`) |
-| Constante de serviço | `isc_spb_res_fix_domains = 21` | `src/include/firebird/impl/consts_pub.h` (último usado é 20, `isc_spb_res_replica_mode`) |
+| Constante de serviço | `isc_spb_res_fix_domains = 22` | `src/include/firebird/impl/consts_pub.h` |
 | Mensagens novas | 411 a 419 | `src/include/firebird/impl/msg/gbak.h` (última usada é 410) |
+
+**Sobre o 22, não 21:** backup e restore compartilham o mesmo espaço de tags SPB, e boa parte dos
+`isc_spb_res_*` são aliases dos `isc_spb_bkp_*`, não números literais. O 21 já está tomado por
+`isc_spb_bkp_parallel_workers` (`consts_pub.h:430`), reexportado como `isc_spb_res_parallel_workers`
+(`consts_pub.h:561`). Contar só os literais do bloco `res_` leva ao número errado.
+
+**Services API fica fora do escopo desta versão.** Ligar o switch ao caminho de serviço exigiria
+também um `case` em `ClumpletReader.cpp` (por volta de 338, senão o SPB é rejeitado com
+`invalid_structure`) e outro em `svc.cpp` (por volta de 3016), que este plano não toca. Portanto a
+entrada na tabela de switches usa `0` no campo `in_spb_sw`, como fazem `USER` e `PASSWORD`. A
+constante fica definida para quando o caminho de serviço for implementado.
 
 ## Estrutura de arquivos
 
@@ -42,7 +53,7 @@ Use estes valores. Foram conferidos na árvore atual e estão livres:
 | `src/burp/burp.cpp` (modificar) | Consumo do argumento do switch |
 | `src/burp/restore.epp` (modificar) | Aplicação nos três ramos ODS, resolução, relatório |
 | `src/include/firebird/impl/consts_pub.h` (modificar) | `isc_spb_res_fix_domains` |
-| `src/include/firebird/impl/msg/gbak.h` (modificar) | Mensagens 411 a 417 |
+| `src/include/firebird/impl/msg/gbak.h` (modificar) | Mensagens 411 a 419 (411 a 417 e 419 na Task 2, 418 na Task 5) |
 | `builds/win32/msvc15/burp.vcxproj` e `.filters` (modificar) | Registrar `domain_remap.cpp` |
 | `builds/win32/msvc15/common_test.vcxproj` (modificar) | Registrar `DomainRemapTest.cpp` e `domain_remap.cpp` |
 
@@ -62,8 +73,8 @@ O módulo é puro: sem `BurpGlobals`, sem GPRE, sem I/O de banco. É isso que o 
 
 **Interfaces:**
 - Produces:
-  - `struct Burp::RemapRule { Firebird::string domainName; UCHAR blrType; USHORT charLength; Firebird::string charsetName; Firebird::string collationName; bool applied; }`
-  - `class Burp::DomainRemap` com `void parse(const char* spec)`, `RemapRule* findRule(const char* paddedName, size_t nameSize)`, `unsigned ruleCount() const`, `const RemapRule& rule(unsigned index) const`
+  - `struct Burp::RemapRule { Firebird::string domainName; UCHAR blrType; USHORT charLength; Firebird::string charsetName; Firebird::string collationName; bool uncheckedWidth; bool applied; }`, com os construtores `RemapRule(MemoryPool&)` e `RemapRule(MemoryPool&, const RemapRule&)`
+  - `class Burp::DomainRemap` com construtor default e `DomainRemap(MemoryPool&)`, mais `void parse(const char* spec)`, `RemapRule* findRule(const char* paddedName, size_t nameSize)`, `unsigned ruleCount() const`, `const RemapRule& rule(unsigned index) const` e a sobrecarga não const `RemapRule& rule(unsigned index)`
   - `class Burp::DomainRemapError` (exceção com `Firebird::string message`)
 
 - [ ] **Step 1: Escrever o teste que falha**
@@ -74,9 +85,14 @@ Crie `src/burp/tests/DomainRemapTest.cpp`:
 #include "firebird.h"
 #include "boost/test/unit_test.hpp"
 #include "../burp/domain_remap.h"
+#include "../jrd/blr.h"
 
 using namespace Firebird;
 using namespace Burp;
+
+// BOOST_TEST decomposes the expression and needs printable operands.
+// Firebird::string has no ostream operator, so wrap comparisons in an extra
+// pair of parentheses to keep Boost from decomposing them.
 
 BOOST_AUTO_TEST_SUITE(BurpSuite)
 BOOST_AUTO_TEST_SUITE(DomainRemapSuite)
@@ -88,11 +104,11 @@ BOOST_AUTO_TEST_CASE(ParseInlineRule)
 	remap.parse("TDR_CNPJ = VARCHAR(20) CHARACTER SET ISO8859_1 COLLATE ISO8859_1_LTRIM_ZERO_AI");
 
 	BOOST_TEST(remap.ruleCount() == 1u);
-	BOOST_TEST(remap.rule(0).domainName == "TDR_CNPJ");
+	BOOST_TEST((remap.rule(0).domainName == "TDR_CNPJ"));
 	BOOST_TEST(remap.rule(0).blrType == blr_varying);
 	BOOST_TEST(remap.rule(0).charLength == 20u);
-	BOOST_TEST(remap.rule(0).charsetName == "ISO8859_1");
-	BOOST_TEST(remap.rule(0).collationName == "ISO8859_1_LTRIM_ZERO_AI");
+	BOOST_TEST((remap.rule(0).charsetName == "ISO8859_1"));
+	BOOST_TEST((remap.rule(0).collationName == "ISO8859_1_LTRIM_ZERO_AI"));
 }
 
 BOOST_AUTO_TEST_CASE(ParseCharAndOptionalClauses)
@@ -106,7 +122,7 @@ BOOST_AUTO_TEST_CASE(ParseCharAndOptionalClauses)
 	BOOST_TEST(remap.rule(0).charsetName.isEmpty());
 	BOOST_TEST(remap.rule(0).collationName.isEmpty());
 	BOOST_TEST(remap.rule(1).charsetName.isEmpty());
-	BOOST_TEST(remap.rule(1).collationName == "PT_BR");
+	BOOST_TEST((remap.rule(1).collationName == "PT_BR"));
 }
 
 BOOST_AUTO_TEST_CASE(IgnoresCommentsAndBlankLines)
@@ -115,7 +131,7 @@ BOOST_AUTO_TEST_CASE(IgnoresCommentsAndBlankLines)
 	remap.parse("# comentario\n\nA = CHAR(5)\n# outro\n");
 
 	BOOST_TEST(remap.ruleCount() == 1u);
-	BOOST_TEST(remap.rule(0).domainName == "A");
+	BOOST_TEST((remap.rule(0).domainName == "A"));
 }
 
 BOOST_AUTO_TEST_CASE(RejectsUnsupportedType)
@@ -161,7 +177,7 @@ BOOST_AUTO_TEST_CASE(DomainNameIsCaseInsensitive)
 {
 	DomainRemap remap;
 	remap.parse("tdr_cnpj = VARCHAR(20)");
-	BOOST_TEST(remap.rule(0).domainName == "TDR_CNPJ");
+	BOOST_TEST((remap.rule(0).domainName == "TDR_CNPJ"));
 }
 
 BOOST_AUTO_TEST_CASE(ParseUncheckedFlag)
@@ -170,7 +186,7 @@ BOOST_AUTO_TEST_CASE(ParseUncheckedFlag)
 	remap.parse("A = VARCHAR(17) COLLATE PT_BR UNCHECKED; B = VARCHAR(20)");
 
 	BOOST_TEST(remap.rule(0).uncheckedWidth == true);
-	BOOST_TEST(remap.rule(0).collationName == "PT_BR");
+	BOOST_TEST((remap.rule(0).collationName == "PT_BR"));
 	BOOST_TEST(remap.rule(1).uncheckedWidth == false);
 }
 
@@ -225,8 +241,21 @@ public:
 
 struct RemapRule
 {
-	RemapRule()
-		: blrType(0), charLength(0), uncheckedWidth(false), applied(false)
+	// ObjectsArray<T>::add builds elements as T(pool, item), so both of these
+	// are mandatory: objects_array.h:211 will not compile without them.
+	explicit RemapRule(Firebird::MemoryPool& pool)
+		: domainName(pool), blrType(0), charLength(0),
+		  charsetName(pool), collationName(pool),
+		  uncheckedWidth(false), applied(false)
+	{
+	}
+
+	RemapRule(Firebird::MemoryPool& pool, const RemapRule& other)
+		: domainName(pool, other.domainName), blrType(other.blrType),
+		  charLength(other.charLength),
+		  charsetName(pool, other.charsetName),
+		  collationName(pool, other.collationName),
+		  uncheckedWidth(other.uncheckedWidth), applied(other.applied)
 	{
 	}
 
@@ -242,6 +271,11 @@ struct RemapRule
 class DomainRemap
 {
 public:
+	DomainRemap()
+		: m_rules(*getDefaultMemoryPool())
+	{
+	}
+
 	explicit DomainRemap(Firebird::MemoryPool& pool)
 		: m_rules(pool)
 	{
@@ -603,7 +637,7 @@ Ao final desta task o switch existe, aparece na ajuda, é aceito na linha de com
 Em `src/include/firebird/impl/msg/gbak.h`, no fim do arquivo, depois da linha 410:
 
 ```c
-FB_IMPL_MSG_NO_SYMBOL(GBAK, 411, "    @1FIX_D(OMAINS)       redefine domains during restore, @2file or inline rules")
+FB_IMPL_MSG_NO_SYMBOL(GBAK, 411, "    @1FIX_D(OMAINS)       redefine domains during restore, @@file or inline rules")
 FB_IMPL_MSG_SYMBOL(GBAK, 412, gbak_missing_domain_rules, "domain remap rules parameter missing")
 FB_IMPL_MSG_SYMBOL(GBAK, 413, gbak_invalid_domain_rules, "invalid domain remap rules: @1")
 FB_IMPL_MSG_NO_SYMBOL(GBAK, 414, "remapping domain @1 to @2")
@@ -615,7 +649,10 @@ FB_IMPL_MSG_NO_SYMBOL(GBAK, 419, "domain @1 target width @2 is below the @3 the 
 
 A msg 418 é adicionada na Task 5, junto do relatório que a usa.
 
-Nota sobre a 411: o `@1` é o prefixo de switch que o gbak injeta em todas as linhas de ajuda (veja as msgs 406 e 409 como modelo), e o `@2` recebe o literal `@` do exemplo de uso.
+Nota sobre a 411: `burp_usage` passa **um único** argumento (`switch_char`) para toda linha de ajuda
+(`burp.cpp:2541,2549-2553`), então só `@1` é válido. Um `@2` sairia como
+`<Missing arg #2 - possibly status vector overflow>` (`MsgPrint.cpp:269-275`). Para imprimir um `@`
+literal use `@@` (`MsgPrint.cpp:254`); um `@` solto seguido de letra vira `(error)`.
 
 - [ ] **Step 2: Adicionar a constante de serviço**
 
@@ -636,12 +673,14 @@ const int IN_SW_BURP_FIX_DOMAINS		= 56;	// redefine domains during restore
 E na tabela `burp_in_sw_table`, logo após a entrada de `FIX_FSS_METADATA` (linha 138):
 
 ```cpp
-	{IN_SW_BURP_FIX_DOMAINS,		isc_spb_res_fix_domains,
+	{IN_SW_BURP_FIX_DOMAINS,		0,
 												"FIX_DOMAINS",		0, 0, 0, false, false,	411,	5, NULL, boRestore},
 				// msg 411: @1FIX_D(OMAINS)       redefine domains during restore
 ```
 
 O `5` é a abreviação mínima, o que torna `-FIX_D` suficiente e não colide com os `FIX_FSS_*`, que exigem 9.
+O `0` no `in_spb_sw` é deliberado: o caminho de Services API está fora do escopo desta versão, como
+explicado na seção de numeração. É o mesmo que `USER` e `PASSWORD` fazem.
 
 - [ ] **Step 4: Declarar os campos globais**
 
@@ -675,7 +714,18 @@ Em `src/burp/burp.cpp`, no `switch` de switches, logo após o `case IN_SW_BURP_F
 			break;
 ```
 
-E onde os switches já validados são transformados em estado (procure onde `gbl_sw_fix_fss_data_id` é resolvido), acrescente o parse, para que erro de sintaxe aborte antes de o banco ser criado:
+Ainda em `burp.cpp`, o switch precisa ser recusado em backup, como os `FIX_FSS_*` já são. Na cadeia
+de `errNum` dentro de `if (sw_replace == IN_SW_BURP_B)` (`burp.cpp:1315-1345`), acrescente:
+
+```cpp
+		else if (tdgbl->gbl_sw_fix_domains)
+			errNum = IN_SW_BURP_FIX_DOMAINS;
+```
+
+E logo depois desse mesmo bloco de validação pós-loop, acrescente o parse, para que erro de sintaxe
+aborte antes de o banco ser criado. **Este trecho vai em `burp.cpp`, não em `restore.epp`**: a
+resolução do `gbl_sw_fix_fss_data_id` acontece em `restore.epp:10589`, depois de o banco já existir,
+que é o oposto do que se quer aqui.
 
 ```cpp
 	if (tdgbl->gbl_sw_fix_domains)
@@ -862,7 +912,14 @@ Em cada um dos três blocos `STORE ... X IN RDB$FIELDS` de `get_global_field`, i
 		}
 ```
 
-No ramo `else` (`< DB_VERSION_DDL10`), `RDB$CHARACTER_LENGTH` pode não existir na estrutura; se o GPRE reclamar, remova a leitura e as duas atribuições de `CHARACTER_LENGTH` nesse bloco apenas, mantendo o resto igual.
+**Atenção ao ramo `else` (`< DB_VERSION_DDL10`).** O campo que não existe lá é `RDB$FIELD_PRECISION`,
+não `RDB$CHARACTER_LENGTH`: o comentário do próprio ramo diz "without rdb$field_precision"
+(`restore.epp:6143`) e `RDB$CHARACTER_LENGTH` aparece normalmente em `6169`. Nesse bloco, **remova a
+leitura e a atribuição de `FIELD_PRECISION`** e mantenha `CHARACTER_LENGTH`.
+
+E não espere que o GPRE avise: ele conhece o campo, monta o request e a falha só apareceria em
+runtime contra servidor pré-ODS10, que é exatamente a razão de o ramo existir. Colar o snippet
+idêntico nos três ramos quebra o ramo legado em silêncio.
 
 - [ ] **Step 3: Compilar**
 
@@ -972,13 +1029,20 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 		// the FIX_FSS charset resolution uses at restore.epp:10577. BurpGlobals
 		// members are for handles reused on every backup record, not for a
 		// one shot lookup.
+		// Copy into a plain local before each FOR. The GPRE precedent is a local
+		// string (restore.epp:10587) or a struct member, not a method call on a
+		// member of a loop variable.
+		Firebird::string lookupCharset = rule.charsetName;
+		Firebird::string lookupCollation = rule.collationName;
+		Firebird::string lookupDomain = rule.domainName;
+
 		if (!charsetFound)
 		{
 			Firebird::IRequest* req_charset = nullptr;
 
 			FOR (REQUEST_HANDLE req_charset)
 				CS IN RDB$CHARACTER_SETS
-				WITH CS.RDB$CHARACTER_SET_NAME EQ rule.charsetName.c_str()
+				WITH CS.RDB$CHARACTER_SET_NAME EQ lookupCharset.c_str()
 
 				charsetId = CS.RDB$CHARACTER_SET_ID;
 				charsetFound = true;
@@ -1004,7 +1068,7 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 
 			FOR (REQUEST_HANDLE req_collation)
 				CL IN RDB$COLLATIONS
-				WITH CL.RDB$COLLATION_NAME EQ rule.collationName.c_str()
+				WITH CL.RDB$COLLATION_NAME EQ lookupCollation.c_str()
 
 				collationId = CL.RDB$COLLATION_ID;
 
@@ -1031,7 +1095,7 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 
 		FOR (REQUEST_HANDLE req_field)
 			X IN RDB$FIELDS
-			WITH X.RDB$FIELD_NAME EQ rule.domainName.c_str()
+			WITH X.RDB$FIELD_NAME EQ lookupDomain.c_str()
 
 			MODIFY X USING
 				X.RDB$CHARACTER_SET_ID = charsetId;
@@ -1108,7 +1172,10 @@ No `case rec_relation_data:` (por volta de 10731), antes do `if (flag)`:
 			if (flag)
 ```
 
-E no fim do restore, antes do commit final, para cobrir backups sem nenhuma relation.
+E um terceiro ponto, para cobrir backup sem nenhuma relation: dentro de `restore()`, imediatamente
+após o laço `while (get_record(...))` terminar e antes de `if (!task.finish())` (por volta de
+`restore.epp:10822`). O bloco `if (flag_norel)` logo adiante (por volta de `10864`) é justamente o
+commit que trata esse caso, então a chamada precisa vir antes dele.
 
 - [ ] **Step 3: Compilar e verificar o caminho feliz**
 
@@ -1177,9 +1244,17 @@ Expected: as mesmas linhas de `remapping domain` e do resumo, sem restaurar dado
 
 Se nenhuma das três chamadas de `resolve_domain_remap` for alcançada sob `-m`, adicione a chamada no ponto que faltar e registre qual era.
 
-- [ ] **Step 2: Teste semântico da collation**
+- [ ] **Step 2: Teste semântico da collation (requer a Task 6 já executada)**
 
-Este é o teste que a seção 8 da spec exige e que ainda não foi feito em nenhum momento do projeto. Precisa do `fbintl` com a LTRIM_ZERO instalado, ou seja, da branch integradora da Task 6. Se ainda não estiver disponível, execute a Task 6 antes desta step.
+Este é o teste que a seção 8 da spec exige e que ainda não foi feito em nenhum momento do projeto.
+Precisa do `fbintl` com a LTRIM_ZERO instalado, ou seja, do build da branch integradora.
+**Execute a Task 6 antes desta step**, e veja a nota de ordenação no fim da Task 6.
+
+Sobre o nome: a collation registrada pelo plugin é `ISO8859_1_LTRIM_ZERO`, conforme
+`builds/install/misc/fbintl.conf` na branch `feature/ltrim-zero-collation-v5`. O nome
+`ISO8859_1_LTRIM_ZERO_AI` que aparece na spec é outra coisa: é uma collation de usuário existente no
+backup do cliente, derivada da do plugin com atributos de accent insensitive. Nos testes deste plano
+use o nome do plugin.
 
 ```sql
 CREATE COLLATION ISO8859_1_LTRIM_ZERO FOR ISO8859_1 FROM EXTERNAL ('ISO8859_1_LTRIM_ZERO');
@@ -1227,7 +1302,7 @@ static void report_remap_overrides(BurpGlobals* tdgbl)
 
 		FOR (REQUEST_HANDLE req_override)
 			RFR IN RDB$RELATION_FIELDS
-			WITH RFR.RDB$FIELD_SOURCE EQ rule.domainName.c_str()
+			WITH RFR.RDB$FIELD_SOURCE EQ lookupDomain.c_str()
 			AND RFR.RDB$COLLATION_ID NOT MISSING
 
 			BURP_print(false, 418, SafeArg() << RFR.RDB$RELATION_NAME <<
@@ -1249,7 +1324,13 @@ Acrescente a mensagem em `src/include/firebird/impl/msg/gbak.h`:
 FB_IMPL_MSG_NO_SYMBOL(GBAK, 418, "column @1.@2 keeps its own collation and does not follow domain @3")
 ```
 
-Chame `report_remap_overrides(tdgbl)` no fim do restore, depois do commit final dos metadados.
+Chame `report_remap_overrides(tdgbl)` no fim de `restore()`, depois do commit dos metadados e antes
+do `return true` da função (por volta de `restore.epp:10918`). As relations já existem nesse ponto,
+que é o que a consulta precisa.
+
+Nomes vindos do GPRE são `CHAR` com padding de espaços. Passe por `MISC_terminate` antes de
+imprimir, como o resto do arquivo faz (`restore.epp:5466` é um exemplo), senão a mensagem sai com
+dezenas de espaços no meio.
 
 Verifique criando uma coluna com collation explícita sobre o domínio antes do backup:
 ```sql
@@ -1296,11 +1377,29 @@ git push fork srs/gbak-domain-remap
 git push fork srs/fb5-custom
 ```
 
+**Nota de ordenação.** A Task 5 Step 2 precisa do build desta task, mas os Steps 3 a 5 da Task 5
+adicionam commits em `srs/gbak-domain-remap` que ainda não existem quando o merge é feito. Ordem
+correta:
+
+1. Task 6 Steps 1 e 2 (criar a integradora e buildar), com `srs/gbak-domain-remap` no estado em que
+   estiver
+2. Task 5 completa, commitando em `srs/gbak-domain-remap`
+3. Voltar à integradora e refazer o merge, para trazer os commits novos:
+   ```bash
+   git checkout srs/fb5-custom
+   git merge --no-ff srs/gbak-domain-remap -m "merge: gbak -FIX_DOMAINS follow-ups"
+   ```
+4. Só então este Step 3
+
+Sem isso, a integradora publicada fica sem o relatório de overrides e sem a documentação.
+
 ---
 
 ## Notas para quem for executar
 
 - O arquivo `src/burp/restore.epp` tem mais de 12 mil linhas. As referências de linha deste plano valem para a árvore em `v5.0-release`; confirme pelo contexto ao redor, não só pelo número.
+- `BURP_error` com `abort = true` dentro de um bloco `STORE` é seguro: vira `throw Firebird::LongJump` (`burp.cpp:1632-1637`), com `burp_throw` ligado durante todo o `gbak_main` (`burp.cpp:578`). É a mesma mecânica dos aborts que já existem no arquivo.
+- Origem textual na regra de largura mínima: `DSC_make_descriptor` devolve `dtype_text` com `dsc_length` em bytes, enquanto o DDL compara `dyn_charlen`, em caracteres. Para charset de 1 byte é o mesmo número. Converter `CHAR` para `VARCHAR` em charset multibyte exigiria dividir pelo número de bytes por caractere; não é o caso de uso deste recurso, mas se aparecer, é aqui.
 - APIs usadas nos exemplos, todas conferidas na árvore: `Firebird::string::upper()` (`fb_string.h:406`), `BURP_verbose(USHORT, const SafeArg&)` (`burp_proto.h:51`), `BURP_print(bool, USHORT, const SafeArg&)` (`burp.cpp:1715`), `BURP_error(USHORT, bool, const SafeArg&)` (`burp.cpp:1556`), `DSC_string_length(const dsc*)` (`dsc_proto.h:29`), `os_utils::fopen` (`os_utils.h:89`), `ObjectsArray::add(const T&)` (`objects_array.h:211`), `SafeArg::operator<<` para `int`, `unsigned int` e `const char*` (`SafeArg.h:154-162`). `NOT MISSING` em cláusula `WITH` é GPRE válido (`backup.epp:4044`), e comparar com `.c_str()` dentro de `WITH ... EQ` também (`restore.epp:10587`).
 - Os arquivos `.epp` passam por GPRE. Erros de sintaxe em blocos `FOR`, `STORE` e `MODIFY` aparecem como erros no `.cpp` gerado dentro de `gen/burp/`; sempre corrija o `.epp`.
 - A referência do hack original é o commit `acd92753b7` na branch `gbak_hacked` (também em `fork/gbak_hacked`). Serve de consulta, mas nada dele deve ser copiado: o bloco de debug com `BURP_verbose(121, ...)`, o `strncmp` com tamanho literal e os ids numéricos ficam todos de fora.

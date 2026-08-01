@@ -130,8 +130,14 @@ O argumento aceita duas formas:
 ```
 
 O prefixo `@` indica arquivo. Sem `@`, o próprio argumento é o conjunto de regras, separadas por
-`;`. A forma inline existe porque via Services API o switch viaja como string, e exigir um arquivo
-obrigaria o arquivo a existir no servidor.
+`;`. A forma inline evita que um arquivo precise existir no servidor quando o restore for disparado
+por Services API.
+
+**Services API fica fora do escopo da primeira versão.** Um tag SPB novo com argumento string exige
+também um `case` em `ClumpletReader.cpp` e outro em `svc.cpp`, sem os quais o SPB é rejeitado com
+`invalid_structure`. Portanto a entrada na tabela de switches usa `0` no campo `in_spb_sw`, como
+`USER` e `PASSWORD`, e o switch funciona apenas por linha de comando. A constante
+`isc_spb_res_fix_domains` fica definida para quando o caminho de serviço for ligado.
 
 ### 5.2 Formato das regras
 
@@ -279,6 +285,13 @@ SELECT COUNT(*) FROM <tabela> WHERE <coluna_cnpj> = '000123';
 Pré-condição a documentar: a collation nomeada precisa existir no servidor que restaura. Uma
 collation derivada de plugin (caso da LTRIM_ZERO) exige o `fbintl` correspondente instalado, e sua
 ausência falha no momento do dado, não no do metadado.
+
+Nota sobre os dois nomes que aparecem neste documento. O plugin registra
+`ISO8859_1_LTRIM_ZERO`, conforme `builds/install/misc/fbintl.conf` na branch
+`feature/ltrim-zero-collation-v5`. Já `ISO8859_1_LTRIM_ZERO_AI`, visto em
+`debugGbakOutput.txt:38220`, é uma collation de usuário existente no backup do cliente, derivada
+daquela com atributos de accent insensitive. A regra deve nomear a que de fato existirá no banco
+restaurado: a do backup, quando o backup a traz.
 
 ## 9. Mensagens
 
