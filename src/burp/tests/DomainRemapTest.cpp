@@ -91,6 +91,29 @@ BOOST_AUTO_TEST_CASE(FindRuleHandlesSpacePaddedName)
 	BOOST_TEST(remap.findRule(other, sizeof(other)) == nullptr);
 }
 
+BOOST_AUTO_TEST_CASE(FindRuleHandlesNullTerminatedNameWithGarbageTail)
+{
+	DomainRemap remap;
+	remap.parse("TDR_CNPJ = VARCHAR(20)");
+
+	// GPRE declares RDB$FIELD_NAME as a null terminated string inside a much
+	// larger buffer and never clears the tail, so everything past the
+	// terminator is whatever happened to be on the stack. Fill the tail with a
+	// non blank byte to stand in for that.
+	char buffer[253];
+	memset(buffer, 0xCC, sizeof(buffer));
+	memcpy(buffer, "TDR_CNPJ", 8);
+	buffer[8] = '\0';
+
+	BOOST_TEST(remap.findRule(buffer, sizeof(buffer)) != nullptr);
+
+	memset(buffer, 0xCC, sizeof(buffer));
+	memcpy(buffer, "TDR_CNPJ2", 9);
+	buffer[9] = '\0';
+
+	BOOST_TEST(remap.findRule(buffer, sizeof(buffer)) == nullptr);
+}
+
 BOOST_AUTO_TEST_CASE(DomainNameIsCaseInsensitive)
 {
 	DomainRemap remap;

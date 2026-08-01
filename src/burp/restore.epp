@@ -5435,15 +5435,19 @@ static bool apply_domain_remap(BurpGlobals* tdgbl,
 	if (!rule)
 		return false;
 
-	// A domain already in the target shape means the rules do not match the
-	// backup, and silently doing nothing would hide that.
+	// A domain already of the target type means the rules do not match the
+	// backup, and silently doing nothing would hide that. Only the BLR type is
+	// compared here, not the width: CHAR(10) = CHAR(50) is refused, while
+	// CHAR(10) = VARCHAR(50) goes through.
 	const UCHAR currentType = (fieldType == blr_varying || fieldType == blr_text) ?
 		(UCHAR) fieldType : 0;
 
 	if (currentType == rule->blrType)
 	{
-		BURP_error(413, true, SafeArg() <<
-			"domain is already in the target type, refusing to remap");
+		Firebird::string msg;
+		msg.printf("domain %s is already in the target type, refusing to remap",
+			rule->domainName.c_str());
+		BURP_error(413, true, SafeArg() << msg.c_str());
 	}
 
 	// Same minimum width the DDL enforces in AlterDomainNode::checkUpdate.

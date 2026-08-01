@@ -266,10 +266,16 @@ void DomainRemap::parseOneRule(const string& line)
 
 RemapRule* DomainRemap::findRule(const char* name, size_t nameSize)
 {
-	// RDB$FIELD_NAME is a space padded CHAR field, so trim before comparing.
-	size_t length = nameSize;
+	// The name may arrive blank padded, or as a null terminated string sitting
+	// in a much larger buffer whose tail was never initialized: GPRE declares
+	// RDB$FIELD_NAME that way. Stop at the first NUL so the garbage after it is
+	// never compared, then drop any trailing blanks.
+	size_t length = 0;
 
-	while (length > 0 && (name[length - 1] == ' ' || name[length - 1] == '\0'))
+	while (length < nameSize && name[length] != '\0')
+		++length;
+
+	while (length > 0 && name[length - 1] == ' ')
 		--length;
 
 	for (unsigned i = 0; i < m_rules.getCount(); ++i)

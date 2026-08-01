@@ -70,7 +70,10 @@ public:
 	// spec is either "@path/to/file" or the rules themselves, separated by ';'
 	void parse(const char* spec);
 
-	// name is RDB$FIELD_NAME, space padded to nameSize
+	// name is the domain name and nameSize the size of the buffer holding it.
+	// Trailing blanks are tolerated, and everything from the first NUL byte on
+	// is ignored, so both a blank padded field and a null terminated buffer
+	// with an uninitialized tail are matched correctly.
 	RemapRule* findRule(const char* name, size_t nameSize);
 
 	unsigned ruleCount() const
