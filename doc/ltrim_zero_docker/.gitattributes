@@ -1,0 +1,4 @@
+# run.sh is executed inside a Linux container. CRLF makes bash fail with
+# "bad interpreter", so keep LF regardless of core.autocrlf on the checkout.
+*.sh text eol=lf
+Dockerfile text eol=lf
