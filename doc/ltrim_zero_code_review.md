@@ -91,6 +91,8 @@ O bug real era o ramo "guarda o último caractere" (A1): com ele, `N("00") = "0"
 
 Removido o ramo, `N("00") = ""` (chave vazia). O motor então zera `key_length` para busca fuzzy (`src/jrd/btr.cpp:1904-1908`) e varre o índice inteiro - **falso negativo impossível**. Nenhum tratamento especial de `key_type` é necessário: `N(prefixo)` sempre é prefixo em bytes de `N(valor)`, porque o corte só acontece no início da string.
 
+> **Atualização (numeric order, `docs/superpowers/specs/2026-08-02-ltrim-zero-numeric-order-design.md` seção 5):** a premissa acima - "`N(prefixo)` sempre é prefixo em bytes de `N(valor)`" - deixou de valer quando a chave passou a levar um prefixo de 2 bytes com o tamanho do normalizado (seção 4 da spec citada acima, "Chave de índice"). A chave de `N(prefixo)` tem tamanho diferente do de `N(valor)`, então o prefixo de tamanho por si só já quebra a relação de prefixo em bytes, mesmo quando os bytes normalizados batem. A correção adotada foi tornar `INTL_KEY_PARTIAL` **sempre** especial: `string_to_key` devolve chave vazia para **todo** `STARTING WITH`, não só para prefixo inteiramente removível. O resultado continua correto (mesmo mecanismo de varredura completa descrito aqui), só que agora é o caminho de **todo** prefixo, não só do zero-only.
+
 **Onde eu errei:** afirmei que índice e scan natural devolveriam conjuntos diferentes porque o predicado casado pelo índice não é reavaliado. **Não é o que acontece.** Medido:
 
 | query | `PLAN NATURAL` | `PLAN INDEX` |
@@ -112,6 +114,8 @@ Repro de intransitividade: `X` = 32500 x `'0'` + `'A'`; `A` = `'A'`; `B` = `'B'`
 Comparador intransitivo alimenta merge join e nested loop -> resultado errado silencioso. `WHERE longcol = 'x'` casa **toda** linha com mais de 32000 bytes.
 
 VERIFICADO após a correção (asserts 6.x e 6b.x): valores de 32600 bytes comparam e agrupam certo, e num teste de controle com chave normalizada de 12000 bytes (acima de `MAX_KEY` = 8192) a coluna `LTRIM_ZERO` produz exatamente os mesmos 2 grupos que a mesma coluna com a collation padrão. Não há colapso nem regressão em relação ao resto do motor.
+
+> **Atualização (numeric order):** isso era verdade para o formato de chave da época desta revisão (chave = `N(x)`, sem prefixo). Com o prefixo de tamanho de 2 bytes (M3 abaixo), a truncagem em `MAX_KEY` passa a cortar 2 bytes a mais de cauda, e isso alcança `DISTINCT` (`SortedStream::compareKeys` é um memcmp sobre a chave truncada, sem revalidar valor): dois valores de mesmo tamanho normalizado que difiram só nos 2 últimos bytes colidem em `DISTINCT` a partir do tamanho normalizado 8191. `GROUP BY` continua batendo com a collation padrão, sem exceção, porque revalida com compare real de valor (`AggregatedStream.cpp:308-325`). Índice de verdade nunca alcança esse regime (ver M3). Asserts 6b.3/6b.3b/6b.6 em `test_ltrim_zero.sql` cobrem os três fatos.
 
 No lado da chave, o dano era em sort/agrupamento, **não** no índice: `INTL_key_length` clampa em `MAX_KEY` = 8192 (`src/jrd/intl.cpp:982-1020`), então um valor acima de 32000 bytes nem chega a `string_to_key` pelo caminho do btree. Mas `str_to_key` também é chamado por SortedStream/HashJoin/AggNodes, para colunas **não** indexadas. Ali `SortedStream.cpp:265` ignora o retorno, deixando a chave de sort toda zerada (buffer pré-zerado em `SortedStream.cpp:208`). Resultado: **todos os valores acima de 32000 bytes colapsam num único grupo em ORDER BY / GROUP BY**.
 
@@ -217,6 +221,8 @@ return n;                                 // sem memset do resto de dstLen
 
 Sem buffer, sem alocação, sem cap de tamanho, sem caminho de exceção, O(n), e os bytes da chave continuam sendo exatamente `N(x)` - preserva a concordância compare/chave. Resolve C1, C3, C4, A1, A2, P1, P2 de uma vez. C2 continua sendo adição separada.
 
+> **Atualização (numeric order):** o trecho de `str_to_key` acima é anterior à mudança de ordenação numérica e não reflete mais o driver de hoje em dois pontos. Primeiro, `key_type == INTL_KEY_PARTIAL` não checa mais `p >= e`: **qualquer** `STARTING WITH` devolve chave vazia agora, porque o prefixo de tamanho na chave (seção 4 da spec de numeric order, "Chave de índice") quebra a relação de prefixo em bytes para todo prefixo, não só para o inteiramente removível - ver a atualização na seção C3 acima. Segundo, a chave deixou de ser exatamente `N(x)`: é `[2 bytes de tamanho, big-endian][N(x)]`, e `texttype_fn_key_length` (M3 abaixo) devolve `len + 2`, não `len`.
+
 ---
 
 ### A4. `SIMILAR TO` ficava case-sensitive - achado só pelos testes
@@ -249,9 +255,11 @@ VERIFICADO: assert 8.3, `SIMILAR TO '%a%'` = 9 = `LIKE '%a%'` = `CONTAINING 'a'`
 
 `TEXTTYPE_ENTRY` (`ldcommon.h:49-53`) nomeia `cs` e `specific_attributes`, ambos não usados -> dois `-Wunused-parameter` no gcc/clang. `TEXTTYPE_ENTRY3` (`ldcommon.h:61-65`) é o macro certo. Cosmético.
 
-### M3. `texttype_fn_key_length` está correto
+### M3. `texttype_fn_key_length` está correto - **superado pela ordenação numérica**
 
-Retornar `len` (linha 212) é certo - a chave nunca cresce, e `INTL_key_length` (`src/jrd/intl.cpp:982-1020`) clampa em `[iLength, MAX_KEY]` de qualquer forma.
+Na época desta revisão, retornar `len` era certo: a chave era exatamente `N(x)`, sem crescer, e `INTL_key_length` (`src/jrd/intl.cpp:982-1020`) clampava em `[iLength, MAX_KEY]` de qualquer forma.
+
+A ordenação numérica (`docs/superpowers/specs/2026-08-02-ltrim-zero-numeric-order-design.md` seção 4) muda essa conclusão: a chave passa a precisar de 2 bytes extras para o tamanho do normalizado, big-endian, na frente dos bytes normalizados, porque a ordem passou a ser por tamanho primeiro. `texttype_fn_key_length` agora devolve `len + 2`. Consequência operacional: o índice mais largo indexável encolhe 2 bytes (ver seção 4.1 da spec), e o mesmo clamp em `MAX_KEY` que antes só cortava a chave de sort agora corta 2 bytes a mais de cauda a partir do tamanho normalizado 8191. Isso atinge só `DISTINCT` (e empate de `ORDER BY`): `SortedStream::compareKeys` é um memcmp sobre a chave truncada, sem revalidar o valor. `GROUP BY` revalida com compare real de valor (`AggregatedStream.cpp:308-325`, `lookForChange`) e continua correto sempre. Índice de verdade nunca alcança esse regime, porque `CREATE INDEX` valida contra `page_size / 4` (`Database.h:654`), teto que também é 8192 no maior page size e cruza com o limite de `MAX_KEY` de um jeito que nenhum índice chega à truncagem (asserts 6b.3/6b.3b/6b.6 em `test_ltrim_zero.sql`).
 
 ### M4. Portabilidade Linux - limpa, fora de C2
 

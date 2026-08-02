@@ -68,9 +68,20 @@ Consequências:
 | `NULL` | - | `NULL` continua `NULL`, não entra na classe vazia |
 
 A relação é uma equivalência de verdade (`N(a) == N(b)` para uma função pura
-`N`), e a chave de índice **é** `N(x)`, então `=`, `DISTINCT`, `GROUP BY`,
-`UNIQUE` e a ordem do índice sempre concordam. Por isso a collation **não**
-precisa de `TEXTTYPE_SEPARATE_UNIQUE`.
+`N`), então `=`, `DISTINCT`, `GROUP BY`, `UNIQUE` e a ordem do índice sempre
+concordam. Por isso a collation **não** precisa de `TEXTTYPE_SEPARATE_UNIQUE`.
+
+A chave de índice deixou de ser a string normalizada sozinha. Agora é
+
+```
+[2 bytes: tamanho de N(x), big-endian][bytes de N(x), em caixa alta]
+```
+
+O prefixo de tamanho é o que faz a ordenação ser por tamanho primeiro (ver
+seção 3). Duas entradas continuam na mesma classe de equivalência exatamente
+quando `N(a) == N(b)`, porque strings normalizadas iguais têm tamanho igual,
+então a chave continua sendo uma função pura de `N(x)`, e `=`/`DISTINCT`/
+`GROUP BY`/`UNIQUE` continuam concordando entre si e com a ordem do índice.
 
 > Ao editar o driver, mantenha `texttype_fn_compare` e
 > `texttype_fn_string_to_key` no mesmo `normalize_bounds`. Se os dois
@@ -80,9 +91,57 @@ precisa de `TEXTTYPE_SEPARATE_UNIQUE`.
 
 ## 3. Limites conhecidos
 
-**Ordenação é lexicográfica, não numérica.** `'10' < '9'` porque `0x31 < 0x39`.
-Quem adota uma collation "tira zero à esquerda" costuma esperar ordem numérica e
-não vai receber. Comparação e índice concordam entre si.
+**A ordem é pelo tamanho da forma normalizada primeiro, depois byte a byte
+sobre a forma normalizada, em caixa alta.** `'9' < '10'`, batendo com o que
+quem adota uma collation "tira zero à esquerda" costuma esperar. Dentro do
+mesmo tamanho, a ordem cai para a ordem de byte simples, então dígito vem
+antes de letra (`'9' = 0x39 < 'A' = 0x41`). O tamanho que conta é o de `N(x)`,
+a forma normalizada, não o do valor gravado, o que é o que põe `'9'` e
+`'0000009'` na mesma posição:
+
+| valor gravado | normalizado | tamanho | posição |
+|---|---|---|---|
+| `'000'` | (vazio) | 0 | 1ª |
+| `'9'` | `9` | 1 | 2ª, empatado |
+| `'0000009'` | `9` | 1 | 2ª, empatado |
+| `'A'` | `A` | 1 | 4ª |
+| `'10'` | `10` | 2 | 5ª |
+| `'0001A34'` | `1A34` | 4 | 6ª |
+| `'12345678901'` | `12345678901` | 11 | 7ª |
+| `'12345678000199'` | `12345678000199` | 14 | 8ª |
+
+Igualdade não mudou: `'000123' = '123'` continua verdadeiro, e a classe de
+equivalência continua sendo a forma normalizada. Valores que só diferem em
+zeros à esquerda continuam comparando iguais, e ainda colidem num índice
+`UNIQUE`, exatamente como antes.
+
+**`BETWEEN` mudou de significado além do caso CNPJ que motivou a ordem por
+tamanho.** `BETWEEN '9' AND '11'` agora inclui todo valor de tamanho
+normalizado 1 maior que `'9'`, inclusive letras, antes de chegar em `'10'`:
+`'A'`, `'B'`, `'Z'` satisfazem o intervalo, porque empatam com `'9'` no
+tamanho e vencem no byte, mas continuam mais curtos que o limite superior
+`'11'`, de tamanho 2. Quem filtra uma coluna de largura mista com `BETWEEN`
+precisa levar isso em conta, não só o caso de busca de raiz de CNPJ.
+
+**Acima de `MAX_KEY` (8192 bytes), `DISTINCT` (e empate de `ORDER BY`) podem
+parar de distinguir dois valores que difiram só nos 2 últimos bytes; `GROUP
+BY` não.** O motor sempre cortou a chave de sort de um valor mais largo que
+`MAX_KEY` no comprimento bruto do campo, truncando a cauda em silêncio
+(`intl.cpp:1002-1019`). O prefixo de tamanho de 2 bytes desta collation custa
+2 bytes a mais dessa cauda a partir do tamanho normalizado 8191 (para página
+de 8192 bytes). `DISTINCT` decide igualdade a partir da chave truncada
+(`SortedStream::compareKeys`, um memcmp sobre a chave, sem revalidar o valor
+nessa direção), então dois valores diferentes que colidam ali se fundem.
+`GROUP BY` não: ele revalida com um compare real de valor ao decidir se um
+grupo novo começou (`AggregatedStream.cpp:308-325`, `lookForChange`), então
+continua correto independente da truncagem da chave, sempre. Um índice de
+verdade nunca alcança esse regime: `CREATE INDEX` valida o comprimento
+declarado da chave contra `page_size / 4` (`Database.h:654`), cujo teto
+também é 8192 no maior page size possível, e a truncagem só começa quando o
+comprimento declarado passa 8192 - os dois limites se cruzam de um jeito que
+nenhum índice chega lá. A menor coluna capaz de alcançar isso é bem mais
+larga que os 20 bytes do domínio `TDR_CNPJ`; a base do cliente não é
+alcançada.
 
 **Case-insensitive só em ASCII.** Registrada em WIN1252/ISO8859_1, mas
 `'é' <> 'É'` na comparação. `UPPER()` e `LOWER()` continuam corretos com acento,
@@ -97,10 +156,20 @@ forma canônica aqui é só o uppercase. Então `'00000A' LIKE 'A'` é falso, em
 zero-insensitive, use índice por expressão ou uma coluna normalizada
 persistida.
 
-`STARTING WITH` é consistente entre planos: o prefixo `'00'` gera chave parcial
-vazia, o motor varre o índice inteiro e reavalia o predicado depois do fetch, de
-modo que plano natural e plano por índice devolvem o mesmo conjunto. Nenhuma
-linha é perdida.
+**`STARTING WITH` e `LIKE 'x%'` sobre coluna indexada agora varrem o índice
+inteiro, não só a faixa que casa.** Como a chave carrega um prefixo de
+tamanho, a chave de um prefixo deixou de ser prefixo em bytes da chave do
+valor inteiro, então uma chave parcial não consegue mais descrever "starts
+with" de jeito nenhum. `string_to_key` devolve chave vazia para qualquer
+prefixo nesse caso, o que o motor trata como "nenhum filtro vindo do
+índice": ele percorre toda entrada e reaplica o predicado depois do fetch.
+Isso antes só acontecia para prefixo que normaliza inteiro para vazio (como
+`'00'`); agora acontece para todo `STARTING WITH` e `LIKE 'x%'`,
+independente do prefixo. O resultado continua correto: plano natural e
+plano por índice devolvem o mesmo conjunto, nenhuma linha se perde, e isso
+é coberto pelos asserts 8.6, 8.6b, 8.6c e 8.7. O plano piora, porém: o
+otimizador ainda estima a faixa como seletiva e não sabe que a própria
+varredura agora é completa.
 
 **`UNIQUE` segue a collation.** Inserir `'0A'` depois de `'A'` é violação de
 chave. É a semântica pedida, mas precisa estar clara para quem modela.
@@ -119,6 +188,10 @@ Ao substituir `fbintl.dll` / `libfbintl.so` numa base que já tem esses índices
 - `gbak` backup/restore, **ou**
 - `ALTER INDEX ... INACTIVE` seguido de `ALTER INDEX ... ACTIVE` em todos os
   índices envolvidos (inclusive os implícitos de `PRIMARY KEY` / `UNIQUE`).
+
+Ver `doc/README.ltrim_zero_rollout.md` para quem já tem índice construído no
+formato de chave antigo (sem o prefixo de tamanho) e precisa do inventário e
+do roteiro para a troca.
 
 ---
 

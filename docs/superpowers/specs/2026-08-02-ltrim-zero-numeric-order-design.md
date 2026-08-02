@@ -105,7 +105,27 @@ cujo comprimento declarado está próximo de `page_size / 4` faz parte do trabal
 
 Há ainda o teto de `MAX_KEY = 8192` (`constants.h:195`) na chave de sort
 (`intl.cpp:1013-1014`): acima disso a chave é truncada e o retorno não é checado por
-`SortedStream.cpp:265`. Já é assim hoje; os 2 bytes só encolhem a margem.
+`SortedStream.cpp:265`. Já é assim hoje, mas os 2 bytes não afetam todo consumidor da
+mesma forma. `GROUP BY` revalida fronteira de grupo com compare real de valor
+(`AggregatedStream.cpp:308-325`, `lookForChange`), então continua correto mesmo quando a
+chave de sort trunca, de forma incondicional, porque valor igual sempre produz chave igual
+e valor diferente é distinguido pelo compare, não pela chave. `DISTINCT` (e empate de
+`ORDER BY`) usa `SortedStream::compareKeys` (`SortedStream.cpp:283`), que aceita igualdade
+de chave crua sem revalidar o valor nessa direção, então dois valores que difiram só nos 2
+últimos bytes da forma normalizada podem colidir em `DISTINCT` a partir de tamanho
+normalizado 8191 (página de 8192 bytes) - verificado por execução, não só por leitura de
+código (asserts 6b.3/6b.3b/6b.6 em `test_ltrim_zero.sql`).
+
+Índice de verdade nunca alcança esse regime. A truncagem exige `key_length(len) = len + 2`
+maior que `MAX_KEY` (8192), ou seja `len >= 8191`, mas `CREATE INDEX` valida o comprimento
+declarado da chave contra `page_size / 4` (`Database.h:654`, `idx.cpp:879`), cujo teto
+também é 8192 no maior page size possível. Em `len = 8191` o comprimento declarado é 8193,
+acima desse teto, e o índice é recusado na criação; em `len = 8190` o comprimento declarado
+é 8192, que cabe, e `dstLen` sai exatamente `len + 2`, sem truncar nada. Os dois limites se
+cruzam exatamente de um jeito que nenhum índice alcança o regime de truncagem; só chave de
+sort (`ORDER BY`, `GROUP BY`, `DISTINCT`), que não tem teto de `page_size / 4`, alcança. A
+menor coluna capaz de chegar lá é bem mais larga que os 20 bytes do domínio `TDR_CNPJ`; a
+base do cliente não é alcançada.
 
 ## 5. STARTING WITH
 
@@ -174,8 +194,11 @@ resultado errado até serem reconstruídos. Isso vale para:
 - Índices de expressão cujo resultado carregue a collation, que **não** aparecem num
   inventário por `RDB$INDEX_SEGMENTS` e precisam entrar na lista à parte
   (`btr.cpp:2059`).
-- Qualquer outro banco do servidor que use `ISO8859_1_LTRIM_ZERO`, `WIN1252_LTRIM_ZERO`,
-  `UTF8_LTRIM_ZERO`, `NONE_LTRIM_ZERO` ou `DOS850_LTRIM_ZERO`.
+- Qualquer outro banco do servidor que use `ISO8859_1_LTRIM_ZERO` ou `WIN1252_LTRIM_ZERO`.
+  São as duas únicas collations registradas, tanto no `fbintl` (`src/intl/ld.cpp:386,445`)
+  quanto no módulo standalone (`fbltrimzero.conf`). O nome local pode ser outro: quem
+  manda é o `RDB$COLLATIONS.RDB$BASE_COLLATION_NAME`, que guarda o nome do
+  `FROM EXTERNAL` (`DdlNodes.epp:3977`).
 
 **Nenhuma escrita pode ocorrer entre trocar o dll e terminar o rebuild.** Não é só
 consulta: a checagem de chave estrangeira monta chave nova e procura no índice do
@@ -187,8 +210,9 @@ recusa com "Cannot deactivate index used by a PRIMARY/UNIQUE constraint"
 (`trig.h:1377-1378`, `ini.epp:189`). Com 421 segmentos, boa parte é de PK, UNIQUE ou FK,
 então o caminho realista é **backup e restore**, que reconstrói tudo, com
 `ALTER INDEX INACTIVE/ACTIVE` reservado para os índices comuns caso se queira uma janela
-menor. A decisão entre os dois entra no plano de implementação, medindo o tempo dos dois
-caminhos.
+menor. Não há decisão a medir: um rebuild seletivo deixaria os índices de constraint no
+formato antigo enquanto o dll já fala o novo, e esse é o estado de resultado errado, não o
+estado lento. O caminho é backup e restore.
 
 Entre a troca do dll e o fim do rebuild, `gfix -v` reporta corrupção de índice. É
 esperado, e não indica problema novo.

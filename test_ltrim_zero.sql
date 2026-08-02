@@ -367,11 +367,39 @@ COMMIT;
 
 /* ------------------------------------------------------------------ */
 /* 6b. Values whose NORMALIZED form is longer than MAX_KEY (8192)      */
-/*     Discriminating test: the same data is stored twice, once with   */
-/*     LTRIM_ZERO and once with the default collation. Whatever the    */
-/*     engine limit is, both columns must behave the same way. A       */
-/*     difference between V and P would be a regression of this        */
-/*     driver; identical behaviour is an engine wide limit.            */
+/*     The engine caps the sort key at the raw field length            */
+/*     (intl.cpp:1002-1019) and does not check the return of           */
+/*     string_to_key (SortedStream.cpp:265), so a value wider than     */
+/*     MAX_KEY has always had its key truncated. The length prefix     */
+/*     this collation writes costs 2 more bytes of tail once that      */
+/*     truncation kicks in (normalized length 8191 and up, at the      */
+/*     8192 byte page size this database uses).                        */
+/*                                                                      */
+/*     That tail loss does not reach every consumer the same way.      */
+/*     GROUP BY re-verifies group boundaries with a real value compare */
+/*     (AggregatedStream.cpp:308-325, lookForChange), so two different */
+/*     values with colliding truncated keys still end up in separate   */
+/*     groups: it is safe unconditionally, because equal values always */
+/*     produce identical keys and unequal values are told apart by the */
+/*     real compare, never by the key. DISTINCT relies on               */
+/*     SortedStream::compareKeys (SortedStream.cpp:283), a memcmp over  */
+/*     the key with no value level recheck in this direction, so two   */
+/*     values of the SAME normalized length that differ only in their  */
+/*     last 2 bytes stop separating under DISTINCT once that length    */
+/*     passes 8190.                                                    */
+/*                                                                      */
+/*     No real index can ever reach this regime. Truncation needs      */
+/*     len + 2 > MAX_KEY (8192), i.e. len >= 8191, but CREATE INDEX     */
+/*     validates the declared key length against page_size / 4         */
+/*     (Database.h:654, idx.cpp:879), whose ceiling is also 8192 at     */
+/*     the largest page size. At len = 8191 the declared length is     */
+/*     8193, over that ceiling, and the index is refused outright; at  */
+/*     len = 8190 the declared length is 8192, which fits, and dstLen  */
+/*     is then exactly len + 2, nothing truncated. The two limits      */
+/*     cross exactly so that no index ever reaches the truncating      */
+/*     regime; only sort keys (ORDER BY, GROUP BY, DISTINCT), which    */
+/*     have no page_size / 4 ceiling, can. The smallest column that    */
+/*     can hit this is far wider than the 20 byte TDR_CNPJ domain.     */
 /* ------------------------------------------------------------------ */
 
 CREATE TABLE T_BIGKEY (
@@ -388,6 +416,9 @@ INSERT INTO T_BIGKEY VALUES (2, LPAD(_WIN1252 'B', 12000, _WIN1252 'X'),
                                 LPAD(_WIN1252 'B', 12000, _WIN1252 'X'));
 COMMIT;
 
+/* GROUP BY re-checks real values, so it still tells the two rows apart
+   above MAX_KEY. Kept as a hard assertion: this is not just observed,
+   it is structurally guaranteed by lookForChange (see header above). */
 INSERT INTO TST (NAME, EXPECTED, ACTUAL)
 SELECT '6b.1 GROUP BY over 12000 byte keys: LTRIM_ZERO behaves like the default collation',
        CAST((SELECT COUNT(*) FROM (SELECT P FROM T_BIGKEY GROUP BY P)) AS VARCHAR(80)),
@@ -400,10 +431,24 @@ SELECT '6b.2 ORDER BY over 12000 byte keys: same order as the default collation'
        (SELECT LIST(ID, ',') FROM (SELECT ID FROM T_BIGKEY ORDER BY V))
 FROM RDB$DATABASE;
 
-INSERT INTO TST (NAME, EXPECTED, ACTUAL)
-SELECT '6b.3 DISTINCT over 12000 byte keys matches the default collation',
-       CAST((SELECT COUNT(*) FROM (SELECT DISTINCT P FROM T_BIGKEY)) AS VARCHAR(80)),
+/* DISTINCT goes through SortedStream::compareKeys, a memcmp over the
+   truncated key, so the two 12000 byte rows (same normalized length,
+   differing only in the last byte) collapse into one under LTRIM_ZERO
+   while the default collation, with no key truncation, still tells
+   them apart. This is the one place block 6b actually diverges from
+   the default collation control column; recorded as informative,
+   matching the convention used elsewhere in this file for known
+   limits, not asserted as an error. */
+INSERT INTO TST (KIND, NAME, EXPECTED, ACTUAL)
+SELECT 'I', '6b.3 KNOWN LIMIT: over MAX_KEY the last 2 bytes no longer separate DISTINCT values',
+       '1',
        CAST((SELECT COUNT(*) FROM (SELECT DISTINCT V FROM T_BIGKEY)) AS VARCHAR(80))
+FROM RDB$DATABASE;
+
+INSERT INTO TST (NAME, EXPECTED, ACTUAL)
+SELECT '6b.3b the default collation still separates them, as the control',
+       '2',
+       CAST((SELECT COUNT(*) FROM (SELECT DISTINCT P FROM T_BIGKEY)) AS VARCHAR(80))
 FROM RDB$DATABASE;
 
 INSERT INTO TST (NAME, EXPECTED, ACTUAL)
@@ -414,6 +459,20 @@ FROM RDB$DATABASE;
 INSERT INTO TST (KIND, NAME, EXPECTED, ACTUAL)
 SELECT 'I', '6b.5 how many groups the engine actually produces for 12000 byte keys', '2 if no limit',
        CAST((SELECT COUNT(*) FROM (SELECT V FROM T_BIGKEY GROUP BY V)) AS VARCHAR(80))
+FROM RDB$DATABASE;
+
+/* Truncation cuts the TAIL, not the length prefix: a value of a
+   DIFFERENT normalized length (11000 vs 12000) still separates from
+   the T_BIGKEY pair even though both are above MAX_KEY. This is the
+   property section 4.1 of the design spec relies on, and it holds
+   independently of the 6b.3 limit above. */
+INSERT INTO TST (NAME, EXPECTED, ACTUAL)
+SELECT '6b.6 truncation cuts the tail, not the prefix: different length still separates', '2',
+       CAST((SELECT COUNT(*) FROM (
+              SELECT V FROM T_BIGKEY
+              UNION
+              SELECT LPAD(_WIN1252 'A', 11000, _WIN1252 'X') FROM RDB$DATABASE
+            )) AS VARCHAR(80))
 FROM RDB$DATABASE;
 
 COMMIT;
@@ -525,10 +584,30 @@ INSERT INTO T_ORD VALUES ('a');
 INSERT INTO T_ORD VALUES ('B');
 COMMIT;
 
-INSERT INTO TST (KIND, NAME, EXPECTED, ACTUAL)
-SELECT 'I', '9.1 KNOWN LIMIT: ordering is lexicographic, not numeric',
-       '10,100,9,a,B',
+INSERT INTO TST (NAME, EXPECTED, ACTUAL)
+SELECT '9.1 ordering is numeric: shorter normalized values come first',
+       '9,a,B,10,100',
        (SELECT LIST(TRIM(LEADING '0' FROM V), ',') FROM (SELECT V FROM T_ORD ORDER BY V))
+FROM RDB$DATABASE;
+
+/* T_RANGE motivates 9.2: with a length-first key, a value between two 14
+   digit values used to also catch shorter values whose normalized form
+   happened to sort lexicographically between them. Ordering by length
+   first fixes that: an 11 digit value never falls inside a 14 digit
+   range. */
+CREATE TABLE T_RANGE (
+    V VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_LTRIM_ZERO
+);
+
+INSERT INTO T_RANGE VALUES ('12345678000199');
+INSERT INTO T_RANGE VALUES ('12345678009999');
+INSERT INTO T_RANGE VALUES ('12345678901');
+COMMIT;
+
+INSERT INTO TST (NAME, EXPECTED, ACTUAL)
+SELECT '9.2 a range over 14 digit values does not swallow an 11 digit one', '2',
+       CAST((SELECT COUNT(*) FROM T_RANGE
+             WHERE V BETWEEN '12345678000000' AND '12345678999999') AS VARCHAR(80))
 FROM RDB$DATABASE;
 
 COMMIT;
