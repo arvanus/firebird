@@ -1174,6 +1174,15 @@ LTZ_TEST_CASE(StartingWithMatchesNaturalScan)
 
 	db.ddl("CREATE TABLE S1 (ID INTEGER, V D_LTZ)");
 
+	// Zero prefixed rows. STARTING WITH goes through texttype_fn_canonical,
+	// a per character uppercase mapping that is deliberately NOT zero
+	// insensitive (lc_ltrim_zero.cpp:64-71), so it matches raw bytes, not
+	// equivalence classes. Every one of these rows begins with at least one
+	// '0': MOD(i, 5) + 1 ranges 1..5, and SUBSTRING off a 4 character source
+	// clips 5 down to 4, so the shortest prefix produced is a single '0'.
+	// These rows are what makes '00' and '0000' below meaningful, and they
+	// are also what makes the natural and index plans disagree if the empty
+	// partial key path is wrong.
 	for (int i = 0; i < 2000; i++)
 	{
 		char sql[256];
@@ -1184,35 +1193,70 @@ LTZ_TEST_CASE(StartingWithMatchesNaturalScan)
 		db.exec(sql);
 	}
 
+	// A second set of rows with no leading zero at all, so 'K' and 'K1'
+	// below have raw bytes to match. Without these, every row in the table
+	// starts with '0', and STARTING WITH 'K' / 'K1' would match zero rows on
+	// both plans: the comparison would still pass, but it would be an empty
+	// list against an empty list, proving nothing about the index range.
+	for (int i = 0; i < 2000; i++)
+	{
+		char sql[256];
+		snprintf(sql, sizeof(sql),
+			"INSERT INTO S1 VALUES (%d, 'K' || MOD(%d, 23))",
+			2000 + i, i);
+		db.exec(sql);
+	}
+
 	db.exec("INSERT INTO S1 VALUES (9001, '000')");
 	db.exec("INSERT INTO S1 VALUES (9002, '   ')");
 	db.commit();
 
 	db.ddl("CREATE INDEX IX_S1_V ON S1(V)");
 
-	const char* const prefixes[] =
+	struct Prefix
 	{
-		"K",		// matches many rows
-		"K1",		// matches a subset
-		"00",		// fully strippable prefix
-		"0000",		// fully strippable, longer
-		"ZZZ"		// matches nothing
+		const char* text;
+		bool matchesRows;	// true: must match at least one row; false: must match none
 	};
 
-	for (const char* prefix : prefixes)
+	const Prefix prefixes[] =
+	{
+		{ "K",    true  },	// matches the no-zero-prefix rows added above
+		{ "K1",   true  },	// a subset of them: 'K1', 'K10' .. 'K19'
+		{ "00",   true  },	// raw prefix match: rows with two or more leading
+							// zeros, not every row that equals the '0' class
+		{ "0000", true  },	// raw prefix match: rows with all four leading zeros
+		{ "ZZZ",  false }	// matches nothing, the deliberate zero case
+	};
+
+	for (const Prefix& p : prefixes)
 	{
 		const std::string query =
 			std::string("SELECT CAST(ID AS BIGINT) FROM S1 WHERE V STARTING WITH '")
-			+ prefix + "' ORDER BY ID";
+			+ p.text + "' ORDER BY ID";
 
-		checkSamePlanResult(db, (std::string("STARTING WITH '") + prefix + "'").c_str(),
+		checkSamePlanResult(db, (std::string("STARTING WITH '") + p.text + "'").c_str(),
 			query, "SORT ((S1 NATURAL))", "SORT ((S1 INDEX (IX_S1_V)))");
+
+		// Anchor the count: checkSamePlanResult only proves both plans agree,
+		// not that either found any rows. Two empty lists agree trivially.
+		const ISC_INT64 count = db.one(
+			std::string("SELECT CAST(COUNT(*) AS BIGINT) FROM S1 WHERE V STARTING WITH '")
+			+ p.text + "'");
+
+		if (p.matchesRows)
+			BOOST_CHECK_GT(count, 0);
+		else
+			BOOST_CHECK_EQUAL(count, 0);
 	}
 
-	// LIKE 'x%' is rewritten into blr_starting and must agree as well.
+	// LIKE 'x%' is rewritten into blr_starting and must agree as well, over
+	// the same non-vacuous 'K1' match as the STARTING WITH case above.
 	checkSamePlanResult(db, "LIKE 'K1%'",
 		"SELECT CAST(ID AS BIGINT) FROM S1 WHERE V LIKE 'K1%' ORDER BY ID",
 		"SORT ((S1 NATURAL))", "SORT ((S1 INDEX (IX_S1_V)))");
+
+	BOOST_CHECK_GT(db.one("SELECT CAST(COUNT(*) AS BIGINT) FROM S1 WHERE V LIKE 'K1%'"), 0);
 
 	// The empty prefix matches every row. It is checked without forcing a
 	// plan, because the plan validator may refuse an index for a predicate it
@@ -1294,9 +1338,13 @@ LTZ_TEST_CASE(DescendingIndexAtVolume)
 	{
 		const std::string classOf = "CASE WHEN MOD(ID, 7) = 0 THEN -1 ELSE ID END";
 
+		// No ", ID" tiebreak here: every tied row (the empty class) projects
+		// to the same -1, and every non-tied row has a V that is already
+		// unique (it normalizes to the decimal form of its own ID), so V
+		// alone fully orders the projected column with nothing left to break.
 		IdList ascending = db.ids(
 			"SELECT CAST(" + classOf + " AS BIGINT) FROM DV"
-			" PLAN SORT (DV NATURAL) ORDER BY V, ID DESC");
+			" PLAN SORT (DV NATURAL) ORDER BY V");
 		const IdList descending = db.ids(
 			"SELECT CAST(" + classOf + " AS BIGINT) FROM DV"
 			" PLAN (DV ORDER IX_DV) ORDER BY V DESC");
