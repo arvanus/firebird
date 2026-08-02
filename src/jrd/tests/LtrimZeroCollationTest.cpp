@@ -800,6 +800,8 @@ LTZ_TEST_CASE(CompoundIndex)
 	db.exec("INSERT INTO C1 VALUES (6, 'A',    'Y')");
 	db.exec("INSERT INTO C1 VALUES (7, NULL,   'Y')");
 	db.exec("INSERT INTO C1 VALUES (8, 'A',    NULL)");
+	db.exec("INSERT INTO C1 VALUES (9, '0AB',  '12345678901')");
+	db.exec("INSERT INTO C1 VALUES (10, 'AB',  '00012345678901')");
 	db.commit();
 
 	db.ddl("CREATE INDEX IX_C1 ON C1(A, B)");
@@ -819,6 +821,15 @@ LTZ_TEST_CASE(CompoundIndex)
 	checkSamePlanResult(db, "compound, NULL segment is not the empty class",
 		"SELECT CAST(ID AS BIGINT) FROM C1 WHERE A = 'A' AND B IS NULL ORDER BY ID",
 		"SORT ((C1 NATURAL))", "SORT ((C1 INDEX (IX_C1)))");
+
+	checkSamePlanResult(db, "compound, segments of different normalized lengths",
+		"SELECT CAST(ID AS BIGINT) FROM C1 WHERE A = 'AB' AND B = '12345678901' ORDER BY ID",
+		"SORT ((C1 NATURAL))", "SORT ((C1 INDEX (IX_C1)))");
+
+	// Both rows are the same pair of equivalence classes, so both must come
+	// back through either plan.
+	BOOST_CHECK_EQUAL(db.one(
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM C1 WHERE A = 'ab' AND B = '12345678901'"), 2);
 }
 
 
@@ -1059,6 +1070,268 @@ LTZ_TEST_CASE(BlobAndTransliteration)
 		BOOST_CHECK_EQUAL_COLLECTIONS(expected.begin(), expected.end(),
 			latin1.begin(), latin1.end());
 	}
+}
+
+
+/* ------------------------------------------------------------------------ *
+ * 7. Numeric ordering through a real index
+ *
+ * The unit test in LtrimZeroKeyTest.cpp owns the ordering rule itself. What
+ * is checked here is that a b-tree built from those keys navigates in that
+ * same order, and that a range over values of one width does not pick up a
+ * narrower one.
+ * ------------------------------------------------------------------------ */
+
+LTZ_TEST_CASE(NumericOrderAndRange)
+{
+	TestDb db("numeric");
+
+	db.ddl("CREATE TABLE N1 (ID INTEGER, V D_LTZ)");
+
+	// ID is the expected ascending position, so ORDER BY V must return the
+	// ids in increasing order.
+	db.exec("INSERT INTO N1 VALUES (1, '000')");
+	db.exec("INSERT INTO N1 VALUES (2, '9')");
+	db.exec("INSERT INTO N1 VALUES (3, '0000009')");
+	db.exec("INSERT INTO N1 VALUES (4, 'A')");
+	db.exec("INSERT INTO N1 VALUES (5, '10')");
+	db.exec("INSERT INTO N1 VALUES (6, '0001A34')");
+	db.exec("INSERT INTO N1 VALUES (7, '12345678901')");
+	db.exec("INSERT INTO N1 VALUES (8, '12345678000199')");
+	db.exec("INSERT INTO N1 VALUES (9, '12345678009999')");
+	db.commit();
+
+	db.ddl("CREATE INDEX IX_N1_V ON N1(V)");
+
+	// Sort keys: the plan carries a SORT, so what is being checked is the
+	// order INTL_KEY_SORT produces. Ids 2 and 3 are the same class, so ID is
+	// the tie breaker.
+	{
+		const IdList expected = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+
+		const IdList sorted = db.ids(
+			"SELECT CAST(ID AS BIGINT) FROM N1"
+			" PLAN SORT (N1 NATURAL) ORDER BY V, ID");
+
+		BOOST_CHECK_EQUAL_COLLECTIONS(expected.begin(), expected.end(),
+			sorted.begin(), sorted.end());
+	}
+
+	// Index navigation: no SORT in the plan, so the order comes from walking
+	// the b-tree. Rows of the same class are ties whose relative order is not
+	// defined, so the projection is the normalized length, which is equal for
+	// tied rows and is exactly what the key prefix encodes.
+	{
+		const IdList expected = { 0, 1, 1, 1, 2, 4, 11, 14, 14 };
+
+		const IdList navigated = db.ids(
+			"SELECT CAST(CHAR_LENGTH(TRIM(LEADING '0' FROM TRIM(V))) AS BIGINT)"
+			" FROM N1 PLAN (N1 ORDER IX_N1_V) ORDER BY V");
+
+		BOOST_CHECK_EQUAL_COLLECTIONS(expected.begin(), expected.end(),
+			navigated.begin(), navigated.end());
+	}
+
+	// The CNPJ root range: the 11 digit value must stay out, through both
+	// plans.
+	{
+		const IdList expected = { 8, 9 };
+
+		const std::string query =
+			"SELECT CAST(ID AS BIGINT) FROM N1"
+			" WHERE V BETWEEN '12345678000000' AND '12345678999999' ORDER BY ID";
+
+		const IdList natural = db.ids(withPlan(query, "SORT ((N1 NATURAL))"));
+		const IdList indexed = db.ids(withPlan(query, "SORT ((N1 INDEX (IX_N1_V)))"));
+
+		BOOST_CHECK_EQUAL_COLLECTIONS(expected.begin(), expected.end(),
+			natural.begin(), natural.end());
+		BOOST_CHECK_EQUAL_COLLECTIONS(expected.begin(), expected.end(),
+			indexed.begin(), indexed.end());
+	}
+
+	// Equality is untouched by the ordering change.
+	checkSamePlanResult(db, "equality across leading zeros",
+		"SELECT CAST(ID AS BIGINT) FROM N1 WHERE V = '0000009' ORDER BY ID",
+		"SORT ((N1 NATURAL))", "SORT ((N1 INDEX (IX_N1_V)))");
+
+	BOOST_CHECK_EQUAL(db.one("SELECT CAST(COUNT(*) AS BIGINT) FROM N1 WHERE V = '9'"), 2);
+}
+
+
+/* ------------------------------------------------------------------------ *
+ * 8. STARTING WITH over an indexed column
+ *
+ * string_to_key returns an empty key for INTL_KEY_PARTIAL, which the engine
+ * turns into a full index scan with blr_starting re-checked against the
+ * record. The plan gets worse; the rows must not change. LIKE 'x%' is
+ * rewritten into blr_starting by the optimizer and follows the same path.
+ * ------------------------------------------------------------------------ */
+
+LTZ_TEST_CASE(StartingWithMatchesNaturalScan)
+{
+	TestDb db("starting");
+
+	db.ddl("CREATE TABLE S1 (ID INTEGER, V D_LTZ)");
+
+	for (int i = 0; i < 2000; i++)
+	{
+		char sql[256];
+		snprintf(sql, sizeof(sql),
+			"INSERT INTO S1 VALUES (%d,"
+			" SUBSTRING('0000' FROM 1 FOR MOD(%d, 5) + 1) || 'K' || MOD(%d, 23))",
+			i, i, i);
+		db.exec(sql);
+	}
+
+	db.exec("INSERT INTO S1 VALUES (9001, '000')");
+	db.exec("INSERT INTO S1 VALUES (9002, '   ')");
+	db.commit();
+
+	db.ddl("CREATE INDEX IX_S1_V ON S1(V)");
+
+	const char* const prefixes[] =
+	{
+		"K",		// matches many rows
+		"K1",		// matches a subset
+		"00",		// fully strippable prefix
+		"0000",		// fully strippable, longer
+		"ZZZ"		// matches nothing
+	};
+
+	for (const char* prefix : prefixes)
+	{
+		const std::string query =
+			std::string("SELECT CAST(ID AS BIGINT) FROM S1 WHERE V STARTING WITH '")
+			+ prefix + "' ORDER BY ID";
+
+		checkSamePlanResult(db, (std::string("STARTING WITH '") + prefix + "'").c_str(),
+			query, "SORT ((S1 NATURAL))", "SORT ((S1 INDEX (IX_S1_V)))");
+	}
+
+	// LIKE 'x%' is rewritten into blr_starting and must agree as well.
+	checkSamePlanResult(db, "LIKE 'K1%'",
+		"SELECT CAST(ID AS BIGINT) FROM S1 WHERE V LIKE 'K1%' ORDER BY ID",
+		"SORT ((S1 NATURAL))", "SORT ((S1 INDEX (IX_S1_V)))");
+
+	// The empty prefix matches every row. It is checked without forcing a
+	// plan, because the plan validator may refuse an index for a predicate it
+	// considers unbounded, and that refusal would be an engine decision, not a
+	// collation result.
+	BOOST_CHECK_EQUAL(db.one("SELECT CAST(COUNT(*) AS BIGINT) FROM S1 WHERE V STARTING WITH ''"),
+		db.one("SELECT CAST(COUNT(*) AS BIGINT) FROM S1"));
+}
+
+
+/* ------------------------------------------------------------------------ *
+ * 9. Descending index at volume
+ *
+ * Almost every key now starts with 0x00, the high byte of the length prefix,
+ * so the engine writes desc_end_value_prefix ahead of nearly every descending
+ * key before complementing it (btr.cpp:2929-2934). That branch used to be
+ * rare. Seven rows do not exercise page splits or prefix compression between
+ * nodes, so this case carries the volume.
+ * ------------------------------------------------------------------------ */
+
+LTZ_TEST_CASE(DescendingIndexAtVolume)
+{
+	TestDb db("descvolume");
+
+	db.ddl("CREATE TABLE DV (ID INTEGER NOT NULL PRIMARY KEY, V D_LTZ)");
+
+	// Values of several different normalized lengths, plus the empty class,
+	// so the length prefix varies across the whole index.
+	db.exec(
+		"EXECUTE BLOCK AS "
+		"DECLARE I INTEGER; "
+		"BEGIN "
+		"  I = 0; "
+		"  WHILE (I < 20000) DO "
+		"  BEGIN "
+		"    INSERT INTO DV VALUES (:I, "
+		"      SUBSTRING('000000' FROM 1 FOR MOD(:I, 6) + 1) || "
+		"      CASE MOD(:I, 7) WHEN 0 THEN '' ELSE CAST(MOD(:I, 99991) AS VARCHAR(10)) END); "
+		"    I = I + 1; "
+		"  END "
+		"END");
+	db.commit();
+
+	db.ddl("CREATE DESCENDING INDEX IX_DV ON DV(V)");
+
+	BOOST_REQUIRE_EQUAL(db.one("SELECT CAST(COUNT(*) AS BIGINT) FROM DV"), 20000);
+
+	// Descending navigation must be the exact reverse of the ascending sort.
+	//
+	// Deviation from the task brief: the brief's version of this block
+	// selected CAST(ID AS BIGINT) and ordered both sides by "V ..., ID" so
+	// that ID would break ties. The descending side used
+	// "PLAN (DV ORDER IX_DV) ORDER BY V DESC, ID", which the optimizer
+	// rejects outright: IX_DV carries only V, a navigational PLAN cannot
+	// also satisfy a trailing ID key, and the engine raises
+	// "index IX_DV cannot be used in the specified plan" (isc_index_unused,
+	// Optimizer.cpp) at statement preparation, before any row is touched.
+	// This was confirmed with a minimal isql reproduction using the same
+	// table shape (INTEGER NOT NULL PRIMARY KEY id, a DESCENDING index on a
+	// second column) before spending the 20000 row build on it; the failure
+	// does not depend on collation semantics, volume, or key contents.
+	//
+	// The fix keeps the navigational PLAN, which is what this case exists to
+	// exercise, and drops the unsatisfiable secondary key from the ORDER BY
+	// on that side. Since dropping the tiebreak leaves the order among tied
+	// rows undefined, the comparison uses a projection that is constant
+	// within one equivalence class and distinct across classes instead of
+	// raw ID, the same technique already used in
+	// ConcurrentVolumeAndValidation (RIGHT(V, 2)) and in
+	// NumericOrderAndRange (CHAR_LENGTH(...)) above. MOD(ID, 7) = 0 is
+	// exactly the condition the generator above uses to produce the empty
+	// class, so it identifies the one tie group in this data set.
+	//
+	// The projection is tie invariant only for this data: MOD(ID, 99991) is
+	// the identity for every ID under 20000, so for MOD(ID, 7) <> 0 the
+	// normalized value is the decimal form of ID itself, unique per row, and
+	// MOD(ID, 7) = 0 is the only source of ties. A different row count or a
+	// different modulus can break that and would need a different check.
+	{
+		const std::string classOf = "CASE WHEN MOD(ID, 7) = 0 THEN -1 ELSE ID END";
+
+		IdList ascending = db.ids(
+			"SELECT CAST(" + classOf + " AS BIGINT) FROM DV"
+			" PLAN SORT (DV NATURAL) ORDER BY V, ID DESC");
+		const IdList descending = db.ids(
+			"SELECT CAST(" + classOf + " AS BIGINT) FROM DV"
+			" PLAN (DV ORDER IX_DV) ORDER BY V DESC");
+
+		std::reverse(ascending.begin(), ascending.end());
+
+		BOOST_CHECK_EQUAL(descending.size(), 20000u);
+		BOOST_CHECK_EQUAL_COLLECTIONS(ascending.begin(), ascending.end(),
+			descending.begin(), descending.end());
+	}
+
+	// The empty class through the descending index.
+	checkSamePlanResult(db, "descending index, empty class at volume",
+		"SELECT CAST(ID AS BIGINT) FROM DV WHERE V = '0' ORDER BY ID",
+		"SORT ((DV NATURAL))", "SORT ((DV INDEX (IX_DV)))");
+
+	// A compare / key mismatch surfaces as index corruption.
+	const std::string dbPath = db.path;
+	db.detach();
+
+	{
+		Service service(fb_get_master_interface());
+		IXpbBuilder* spb = service.startBuilder();
+		spb->insertTag(&service.st, isc_action_svc_validate);
+		spb->insertString(&service.st, isc_spb_dbname, dbPath.c_str());
+
+		const std::string output = service.run(spb);
+		spb->dispose();
+
+		BOOST_TEST_MESSAGE("online validation output:\n" << output);
+		BOOST_CHECK(output.find("Error") == std::string::npos);
+		BOOST_CHECK(output.find("corrupt") == std::string::npos);
+	}
+
+	db.reattach();
 }
 
 
