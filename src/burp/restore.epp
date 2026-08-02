@@ -175,6 +175,7 @@ void	realign(BurpGlobals* tdgbl, UCHAR*, const burp_rel*);
 #ifdef sparc
 USHORT	recompute_length(BurpGlobals* tdgbl, burp_rel*);
 #endif
+static void	resolve_domain_remap(BurpGlobals* tdgbl);
 bool	restore(BurpGlobals* tdgbl, Firebird::IProvider*, const TEXT*, const TEXT*);
 void	restore_security_class(BurpGlobals* tdgbl, const TEXT*, const TEXT*);
 USHORT	get_view_base_relation_count(BurpGlobals* tdgbl, const TEXT*, USHORT, bool* error);
@@ -5495,6 +5496,241 @@ static bool apply_domain_remap(BurpGlobals* tdgbl,
 	rule->applied = true;
 
 	return true;
+}
+
+static void resolve_domain_remap(BurpGlobals* tdgbl)
+{
+/**************************************
+ *
+ *	r e s o l v e _ d o m a i n _ r e m a p
+ *
+ **************************************
+ *
+ * Functional description
+ *	Resolve character set and collation names for every domain that was
+ *	remapped, and patch RDB$FIELDS accordingly. Runs after the backup's
+ *	character sets and collations have been stored and before any relation
+ *	exists, so no relation format has been computed yet. Idempotent.
+ *
+ **************************************/
+	if (!tdgbl->gbl_domain_remap || tdgbl->gbl_domain_remap_done)
+		return;
+
+	tdgbl->gbl_domain_remap_done = true;
+
+	Burp::DomainRemap& remap = *tdgbl->gbl_domain_remap;
+	unsigned remapped = 0;
+
+	for (unsigned i = 0; i < remap.ruleCount(); ++i)
+	{
+		Burp::RemapRule& rule = remap.rule(i);
+
+		// Every rule must have matched exactly one domain. A rule that never
+		// matched means the rules do not describe this backup, and letting it
+		// pass would ship a domain with the wrong collation and no complaint.
+		if (!rule.applied)
+		{
+			BURP_error(415, true, SafeArg() << rule.domainName.c_str());
+			// msg 415 domain @1 from remap rules was not found in the backup
+		}
+
+		// Local handles plus MISC_release_request_silent: this is the pattern
+		// the FIX_FSS charset resolution uses further down in restore(). The
+		// BurpGlobals handles are for requests reused on every backup record,
+		// not for a one shot lookup. And copy into a plain local before each
+		// FOR: the GPRE precedent for a WITH argument is a local string, not a
+		// method call on a member of a loop variable.
+		Firebird::string lookupCharset = rule.charsetName;
+		Firebird::string lookupCollation = rule.collationName;
+		Firebird::string lookupDomain = rule.domainName;
+
+		// Without any clause the domain stays on the database default. Nothing
+		// resolved means CS_NONE, one byte per character, collation 0, which is
+		// what a database created with no default character set gives a column.
+		SSHORT charsetId = CS_NONE;
+		SSHORT collationId = 0;
+		SSHORT bytesPerChar = 1;
+		Firebird::string resolvedCharset;
+		bool charsetResolved = false;
+
+		if (rule.collationName.hasData())
+		{
+			bool collationFound = false;
+			Firebird::IRequest* req_collation = nullptr;
+
+			// A collation belongs to one character set, and that is the one the
+			// rule gets when it names no CHARACTER SET of its own.
+			FOR (REQUEST_HANDLE req_collation)
+				CL IN RDB$COLLATIONS CROSS
+				CS IN RDB$CHARACTER_SETS OVER RDB$CHARACTER_SET_ID
+				WITH CL.RDB$COLLATION_NAME EQ lookupCollation.c_str()
+
+				collationId = CL.RDB$COLLATION_ID;
+				charsetId = CS.RDB$CHARACTER_SET_ID;
+				resolvedCharset = CS.RDB$CHARACTER_SET_NAME;
+
+				if (!CS.RDB$BYTES_PER_CHARACTER.NULL)
+					bytesPerChar = CS.RDB$BYTES_PER_CHARACTER;
+
+				collationFound = true;
+			END_FOR;
+			ON_ERROR
+				general_on_error();
+			END_ERROR;
+
+			MISC_release_request_silent(req_collation);
+
+			if (!collationFound)
+			{
+				BURP_error(416, true, SafeArg() << "collation" <<
+					rule.collationName.c_str() << rule.domainName.c_str());
+				// msg 416 cannot resolve @1 @2 for domain @3
+			}
+
+			charsetResolved = true;
+		}
+
+		if (rule.charsetName.hasData())
+		{
+			const SSHORT collationCharsetId = charsetId;
+			const bool haveCollation = rule.collationName.hasData();
+			bool charsetFound = false;
+			Firebird::IRequest* req_charset = nullptr;
+
+			FOR (REQUEST_HANDLE req_charset)
+				CS IN RDB$CHARACTER_SETS
+				WITH CS.RDB$CHARACTER_SET_NAME EQ lookupCharset.c_str()
+
+				charsetId = CS.RDB$CHARACTER_SET_ID;
+				resolvedCharset = CS.RDB$CHARACTER_SET_NAME;
+				bytesPerChar = CS.RDB$BYTES_PER_CHARACTER.NULL ?
+					1 : CS.RDB$BYTES_PER_CHARACTER;
+				charsetFound = true;
+			END_FOR;
+			ON_ERROR
+				general_on_error();
+			END_ERROR;
+
+			MISC_release_request_silent(req_charset);
+
+			if (!charsetFound)
+			{
+				BURP_error(416, true, SafeArg() << "character set" <<
+					rule.charsetName.c_str() << rule.domainName.c_str());
+			}
+
+			// Writing a collation from one character set together with another
+			// character set leaves the domain describing something the engine
+			// cannot use, and the row would only be rejected much later.
+			if (haveCollation && collationCharsetId != charsetId)
+			{
+				Firebird::string msg;
+				msg.printf("collation %s does not belong to character set %s in the rule for domain %s",
+					rule.collationName.c_str(), rule.charsetName.c_str(),
+					rule.domainName.c_str());
+				BURP_error(413, true, SafeArg() << msg.c_str());
+			}
+
+			charsetResolved = true;
+		}
+
+		if (!charsetResolved)
+		{
+			// Neither clause was given, so the rule follows the database
+			// default. A database created without one leaves the name NULL,
+			// the join finds nothing, and CS_NONE stays.
+			Firebird::IRequest* req_default = nullptr;
+
+			FOR (REQUEST_HANDLE req_default)
+				DBB IN RDB$DATABASE CROSS
+				CS IN RDB$CHARACTER_SETS OVER RDB$CHARACTER_SET_NAME
+
+				charsetId = CS.RDB$CHARACTER_SET_ID;
+				resolvedCharset = CS.RDB$CHARACTER_SET_NAME;
+
+				if (!CS.RDB$BYTES_PER_CHARACTER.NULL)
+					bytesPerChar = CS.RDB$BYTES_PER_CHARACTER;
+			END_FOR;
+			ON_ERROR
+				general_on_error();
+			END_ERROR;
+
+			MISC_release_request_silent(req_default);
+		}
+
+		resolvedCharset.rtrim();
+
+		if (bytesPerChar < 1)
+			bytesPerChar = 1;
+
+		// RDB$FIELD_LENGTH is bytes and RDB$CHARACTER_LENGTH is characters.
+		// get_global_field could only write the character count, because the
+		// character set was still unknown there, so a multi byte set needs the
+		// byte length fixed here or the domain ends up narrower than asked.
+		const ULONG byteLength = (ULONG) rule.charLength * (ULONG) bytesPerChar;
+		const ULONG maxLength = (rule.blrType == blr_varying) ?
+			(ULONG) MAX_VARY_COLUMN_SIZE : (ULONG) MAX_COLUMN_SIZE;
+
+		if (byteLength > maxLength)
+		{
+			Firebird::string msg;
+			msg.printf("domain %s needs %u bytes at %d byte(s) per character, over the %u byte limit",
+				rule.domainName.c_str(), (unsigned) byteLength, (int) bytesPerChar,
+				(unsigned) maxLength);
+			BURP_error(413, true, SafeArg() << msg.c_str());
+		}
+
+		unsigned touched = 0;
+		Firebird::IRequest* req_field = nullptr;
+
+		FOR (REQUEST_HANDLE req_field)
+			X IN RDB$FIELDS
+			WITH X.RDB$FIELD_NAME EQ lookupDomain.c_str()
+
+			MODIFY X USING
+				X.RDB$FIELD_LENGTH = (SSHORT) byteLength;
+				X.RDB$CHARACTER_LENGTH = (SSHORT) rule.charLength;
+				X.RDB$CHARACTER_LENGTH.NULL = FALSE;
+				X.RDB$CHARACTER_SET_ID = charsetId;
+				X.RDB$CHARACTER_SET_ID.NULL = FALSE;
+				X.RDB$COLLATION_ID = collationId;
+				X.RDB$COLLATION_ID.NULL = FALSE;
+			END_MODIFY;
+			ON_ERROR
+				general_on_error();
+			END_ERROR;
+
+			++touched;
+		END_FOR;
+		ON_ERROR
+			general_on_error();
+		END_ERROR;
+
+		MISC_release_request_silent(req_field);
+
+		if (touched != 1)
+		{
+			Firebird::string msg;
+			msg.printf("domain %s matched %u rows in RDB$FIELDS, expected 1",
+				rule.domainName.c_str(), touched);
+			BURP_error(413, true, SafeArg() << msg.c_str());
+		}
+
+		Firebird::string target;
+		target.printf("%s(%d) CHARACTER SET %s%s%s",
+			rule.blrType == blr_varying ? "VARCHAR" : "CHAR",
+			(int) rule.charLength,
+			resolvedCharset.hasData() ? resolvedCharset.c_str() : "NONE",
+			rule.collationName.hasData() ? " COLLATE " : "",
+			rule.collationName.c_str());
+
+		BURP_verbose(414, SafeArg() << rule.domainName.c_str() << target.c_str());
+		// msg 414 remapping domain @1 to @2
+		++remapped;
+	}
+
+	BURP_verbose(417, SafeArg() << (int) remapped << (int) remap.ruleCount());
+	// msg 417 remapped @1 domain(s), @2 rule(s) given
 }
 
 bool get_global_field(BurpGlobals* tdgbl)
@@ -10855,6 +11091,9 @@ bool restore(BurpGlobals* tdgbl, Firebird::IProvider* provider, const TEXT* file
 			break;
 
 		case rec_relation:
+			// Last point where the domains can still be patched: no relation
+			// exists yet, so no format has been computed from them.
+			resolve_domain_remap(tdgbl);
 			if (!get_relation(tdgbl, &coord, &task))
 				return false;
 			flag = true;
@@ -10916,6 +11155,7 @@ bool restore(BurpGlobals* tdgbl, Firebird::IProvider* provider, const TEXT* file
 			break;
 
 		case rec_relation_data:
+			resolve_domain_remap(tdgbl);
 			if (flag)
 			{
 				BURP_verbose (68);
@@ -10998,6 +11238,10 @@ bool restore(BurpGlobals* tdgbl, Firebird::IProvider* provider, const TEXT* file
 			break;
 		}
 	}
+
+	// A backup with domains and no relation at all never reaches the calls in
+	// the record loop, and the rules still have to be resolved and checked.
+	resolve_domain_remap(tdgbl);
 
 	if (!task.finish())
 		return false;

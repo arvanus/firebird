@@ -1016,6 +1016,7 @@ public:
 	USHORT			gbl_sw_fix_fss_metadata_id;
 	const SCHAR*	gbl_sw_fix_domains;
 	Burp::DomainRemap*	gbl_domain_remap;
+	bool			gbl_domain_remap_done;
 	bool		gbl_sw_no_reserve;
 	bool		gbl_sw_old_descriptions;
 	bool		gbl_sw_convert_ext_tables;
