@@ -287,7 +287,7 @@ Criar `builds/win32/make_ltrimzero.bat`:
 @if not exist "%LTZ_OUT%" mkdir "%LTZ_OUT%"
 
 cl /nologo ^
-   /O2 /MT /GR- /std:c++17 /W3 ^
+   /O2 /MT /GR- /EHsc- /std:c++17 /W3 ^
    /D NDEBUG /D _WINDOWS /D _USRDLL /D WINDOWS_ONLY /D SUPERCLIENT ^
    /D WIN32 /D _CRT_SECURE_NO_WARNINGS ^
    /I "%FB_ROOT_PATH%\src" ^
