@@ -112,7 +112,7 @@ void	add_access_dpb(BurpGlobals* tdgbl, Firebird::ClumpletWriter& dpb);
 void	add_files(BurpGlobals* tdgbl, const char*);
 static bool	apply_domain_remap(BurpGlobals* tdgbl, const char* fieldName, size_t nameSize,
 	SSHORT& fieldType, SSHORT& fieldLength, SSHORT& fieldScale, SSHORT& fieldSubType,
-	SSHORT& charLength, bool& precisionNull);
+	SSHORT& charLength, bool charLengthNull, bool& precisionNull);
 void	bad_attribute(scan_attr_t, att_type, USHORT);
 void	create_database(BurpGlobals* tdgbl, Firebird::IProvider*, const TEXT*);
 void	decompress(BurpGlobals* tdgbl, UCHAR*, ULONG);
@@ -5408,6 +5408,7 @@ static bool apply_domain_remap(BurpGlobals* tdgbl,
 							   SSHORT& fieldScale,
 							   SSHORT& fieldSubType,
 							   SSHORT& charLength,
+							   bool charLengthNull,
 							   bool& precisionNull)
 {
 /**************************************
@@ -5455,18 +5456,30 @@ static bool apply_domain_remap(BurpGlobals* tdgbl,
 	// RDB$FIELD_TYPE holds a BLR type code, so let DSC_make_descriptor do the
 	// mapping: hand rolling it would get every type but the two obvious ones
 	// wrong, and a too small minimum silently allows truncation.
-	dsc desc;
+	USHORT minimum;
 
-	if (!DSC_make_descriptor(&desc, (USHORT) fieldType, (SSHORT) fieldScale,
-			(USHORT) fieldLength, (SSHORT) fieldSubType, 0, 0))
+	if ((fieldType == blr_text || fieldType == blr_varying) && !charLengthNull)
 	{
-		Firebird::string msg;
-		msg.printf("cannot describe the source type of domain %s",
-			rule->domainName.c_str());
-		BURP_error(413, true, SafeArg() << msg.c_str());
+		// A text source already carries its width in characters. Going through
+		// the descriptor would give bytes instead, and a CHAR(10) in a four
+		// byte character set would demand 40 characters of the rule.
+		minimum = (USHORT) charLength;
 	}
+	else
+	{
+		dsc desc;
 
-	const USHORT minimum = (USHORT) DSC_string_length(&desc);
+		if (!DSC_make_descriptor(&desc, (USHORT) fieldType, (SSHORT) fieldScale,
+				(USHORT) fieldLength, (SSHORT) fieldSubType, 0, 0))
+		{
+			Firebird::string msg;
+			msg.printf("cannot describe the source type of domain %s",
+				rule->domainName.c_str());
+			BURP_error(413, true, SafeArg() << msg.c_str());
+		}
+
+		minimum = (USHORT) DSC_string_length(&desc);
+	}
 
 	if (rule->charLength < minimum)
 	{
@@ -6126,11 +6139,12 @@ bool get_global_field(BurpGlobals* tdgbl)
 				SSHORT remapScale = X.RDB$FIELD_SCALE;
 				SSHORT remapSubType = X.RDB$FIELD_SUB_TYPE;
 				SSHORT remapCharLength = X.RDB$CHARACTER_LENGTH;
+				const bool remapCharLengthNull = X.RDB$CHARACTER_LENGTH.NULL;
 				bool remapPrecisionNull = X.RDB$FIELD_PRECISION.NULL;
 
 				if (apply_domain_remap(tdgbl, X.RDB$FIELD_NAME, sizeof(X.RDB$FIELD_NAME),
 						remapType, remapLength, remapScale, remapSubType,
-						remapCharLength, remapPrecisionNull))
+						remapCharLength, remapCharLengthNull, remapPrecisionNull))
 				{
 					X.RDB$FIELD_TYPE = remapType;
 					X.RDB$FIELD_LENGTH = remapLength;
@@ -6503,11 +6517,12 @@ bool get_global_field(BurpGlobals* tdgbl)
 				SSHORT remapScale = X.RDB$FIELD_SCALE;
 				SSHORT remapSubType = X.RDB$FIELD_SUB_TYPE;
 				SSHORT remapCharLength = X.RDB$CHARACTER_LENGTH;
+				const bool remapCharLengthNull = X.RDB$CHARACTER_LENGTH.NULL;
 				bool remapPrecisionNull = X.RDB$FIELD_PRECISION.NULL;
 
 				if (apply_domain_remap(tdgbl, X.RDB$FIELD_NAME, sizeof(X.RDB$FIELD_NAME),
 						remapType, remapLength, remapScale, remapSubType,
-						remapCharLength, remapPrecisionNull))
+						remapCharLength, remapCharLengthNull, remapPrecisionNull))
 				{
 					X.RDB$FIELD_TYPE = remapType;
 					X.RDB$FIELD_LENGTH = remapLength;
@@ -6878,11 +6893,12 @@ bool get_global_field(BurpGlobals* tdgbl)
 				SSHORT remapScale = X.RDB$FIELD_SCALE;
 				SSHORT remapSubType = X.RDB$FIELD_SUB_TYPE;
 				SSHORT remapCharLength = X.RDB$CHARACTER_LENGTH;
+				const bool remapCharLengthNull = X.RDB$CHARACTER_LENGTH.NULL;
 				bool remapPrecisionNull = true;
 
 				if (apply_domain_remap(tdgbl, X.RDB$FIELD_NAME, sizeof(X.RDB$FIELD_NAME),
 						remapType, remapLength, remapScale, remapSubType,
-						remapCharLength, remapPrecisionNull))
+						remapCharLength, remapCharLengthNull, remapPrecisionNull))
 				{
 					X.RDB$FIELD_TYPE = remapType;
 					X.RDB$FIELD_LENGTH = remapLength;
