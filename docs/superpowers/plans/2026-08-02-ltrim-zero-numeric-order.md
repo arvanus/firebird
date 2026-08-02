@@ -331,7 +331,18 @@ Esperado:
 
 Se o compilador reclamar de `autoconfig.h` faltando, conferir que `/I src\include\gen` está na linha: no Windows o arquivo usado é `src\include\gen\autoconfig_msvc.h`, que já está versionado, e não é preciso rodar `configure`.
 
-- [ ] **Step 5: Instalar na instalação estoque e validar**
+- [ ] **Step 5: Capturar a linha de base com o dll que já está em produção**
+
+Antes de trocar qualquer coisa, rodar a suíte SQL contra o `fbltrimzero.dll` **atualmente instalado**:
+
+```
+"C:\Program Files\Firebird\Firebird_5_0\isql.exe" -u SYSDBA -p masterkey ^
+  -i D:\GitHub\firebird\test_ltrim_zero.sql -o D:\GitHub\firebird\ltz_stock_baseline.txt
+```
+
+Isso existe porque o dll instalado foi gerado há tempos, a partir de uma versão antiga do fonte, sem receita guardada. Sem essa captura, uma diferença no passo 7 seria diagnosticada como receita quebrada quando na verdade é o fonte que andou.
+
+- [ ] **Step 6: Instalar na instalação estoque**
 
 Ainda com o driver **inalterado**, para provar a receita e não o código novo.
 
@@ -352,18 +363,26 @@ Start-Service FirebirdServerDefaultInstance
 
 O `fbintl.conf` instalado já traz `#include $(root)/intl/fbltrimzero.conf`, então o `.conf` não precisa ser recopiado. Conferir com `Select-String -Path "$intl\fbintl.conf" -Pattern fbltrimzero`.
 
-- [ ] **Step 6: Rodar a suíte SQL contra a instalação estoque**
+- [ ] **Step 7: Rodar a suíte SQL contra o dll recém-gerado e comparar**
 
 ```
 "C:\Program Files\Firebird\Firebird_5_0\isql.exe" -u SYSDBA -p masterkey ^
-  -i D:\GitHub\firebird\test_ltrim_zero.sql -o D:\GitHub\firebird\ltz_stock_before.txt
+  -i D:\GitHub\firebird\test_ltrim_zero.sql -o D:\GitHub\firebird\ltz_stock_recipe.txt
 ```
 
-Esperado: **os mesmos resultados de antes da troca do dll**, incluindo o teste `9.1 KNOWN LIMIT: ordering is lexicographic, not numeric` com `10,100,9,a,B`. O comportamento não mudou; o que está sendo provado é que o dll gerado pela receita carrega e responde.
+```powershell
+Compare-Object (Get-Content D:\GitHub\firebird\ltz_stock_baseline.txt) `
+               (Get-Content D:\GitHub\firebird\ltz_stock_recipe.txt)
+```
 
-Se algum caso falhar aqui, o problema é a receita. Restaurar `fbltrimzero.dll.bak_pre_numeric` e corrigir antes de seguir.
+Como ler o resultado, nessa ordem:
 
-- [ ] **Step 7: Documentar a receita**
+1. **O dll carregou e `CREATE COLLATION ... FROM EXTERNAL` resolveu?** Se sim, a receita está provada. É esse o objetivo da task. Se não (erro de carga, collation não encontrada, export faltando), o problema é a receita: restaurar `fbltrimzero.dll.bak_pre_numeric`, subir o serviço e corrigir o `.bat` antes de seguir.
+2. **Sobrou alguma diferença de comportamento?** Então o fonte deste repositório andou em relação ao binário instalado. Registrar quais casos diferem e seguir: operacionalmente é inofensivo, porque o rollout da Task 6 é backup e restore, que reconstrói todo índice a partir do driver novo de qualquer jeito.
+
+O teste `9.1 KNOWN LIMIT: ordering is lexicographic, not numeric` ainda tem que sair com `10,100,9,a,B` nos dois relatórios: o comportamento de ordenação só muda na Task 2.
+
+- [ ] **Step 8: Documentar a receita**
 
 Criar `doc/README.fbltrimzero_build.md` cobrindo, em prosa curta:
 - o que é o módulo e por que ele existe separado do `fbintl` (a produção roda engine estoque; trocar o `fbintl.dll` registraria a collation duas vezes);
@@ -373,7 +392,7 @@ Criar `doc/README.fbltrimzero_build.md` cobrindo, em prosa curta:
 - a receita Linux equivalente, transcrevendo o `Makefile` de `D:\GitHub\ltrim-zero-module` com `FB_SRC` apontando para a árvore configurada, e os checks `nm -D`, `ldd`, `objdump -T`;
 - instalação: copiar `fbltrimzero.dll` e `fbltrimzero.conf` para o diretório `intl` do destino, **sem editar** `fbintl.conf`, e reiniciar o serviço.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add src/intl/ltrimzero builds/win32/make_ltrimzero.bat doc/README.fbltrimzero_build.md
@@ -764,6 +783,32 @@ BOOST_AUTO_TEST_CASE(FullWidthValueFitsInTheDeclaredKeyLength)
 }
 
 
+// A destination smaller than len + 2 is a real case, not a bug: INTL_key_length
+// caps the key at MAX_KEY and then raises it back to the raw field length
+// (intl.cpp:1013-1017), so a wide column asks for more than it gets. The body
+// is cut, the length prefix is not, and nothing is written past dstLen.
+BOOST_AUTO_TEST_CASE(ShortDestinationTruncatesTheBodyOnly)
+{
+	Driver d;
+
+	const std::string wide(20, '7');
+
+	UCHAR buffer[16];
+	memset(buffer, 0xCC, sizeof(buffer));
+
+	const USHORT len = d.tt.texttype_fn_string_to_key(&d.tt,
+		(USHORT) wide.size(), (const UCHAR*) wide.data(),
+		8, buffer, INTL_KEY_SORT);
+
+	BOOST_REQUIRE(len != INTL_BAD_KEY_LENGTH);
+	BOOST_CHECK_EQUAL(len, 8);
+	BOOST_CHECK_EQUAL((UCHAR) buffer[0], 0x00);
+	BOOST_CHECK_EQUAL((UCHAR) buffer[1], 20);		// the true length, not 6
+	BOOST_CHECK_EQUAL(memcmp(buffer + 2, wide.data(), 6), 0);
+	BOOST_CHECK_EQUAL((UCHAR) buffer[8], 0xCC);
+}
+
+
 // PAD SPACE decides whether trailing spaces count towards the length, and the
 // length is now what drives the order, so the two attribute sets must not be
 // silently interchangeable.
@@ -917,7 +962,16 @@ static USHORT texttype_fn_str_to_key(texttype* obj,
 	while (p < end && pos < dstLen)
 		dst[pos++] = ascii_toupper(*p++);
 
-	fb_assert(p == end);	// key_length() promised room for the whole value
+	// dstLen can legitimately be smaller than len + 2, so the loop above must
+	// stop on it and there is nothing to assert here. INTL_key_length caps the
+	// key at MAX_KEY = 8192 and then raises it back to the raw field length
+	// (intl.cpp:1013-1017), so a VARCHAR(12000) of non strippable characters
+	// gets dstLen = 12000 for a key that would want 12002. That truncation
+	// predates this change and is not checked by the caller
+	// (SortedStream.cpp:265). The length prefix stays truthful, so two values
+	// of different normalized length still get different keys even when both
+	// bodies are cut at the same point, which is strictly better than the old
+	// format, where truncation lost the distinction entirely.
 
 	// Do not pad the rest of dst. On the index path the engine passes
 	// dstLen = 32767 no matter how long the value is, and it uses only the
@@ -992,13 +1046,35 @@ git commit -m "feat(intl): order LTRIM_ZERO by normalized length before bytes"
 ## Task 3: Suíte de engine - ordem numérica, STARTING WITH e volume no índice descendente
 
 **Files:**
-- Modify: `src/jrd/tests/LtrimZeroCollationTest.cpp` (acrescentar casos ao final, antes de `BOOST_AUTO_TEST_SUITE_END()` na linha 1065)
+- Modify: `src/jrd/tests/LtrimZeroCollationTest.cpp` (acrescentar linhas ao caso `CompoundIndex`, hoje linhas 789-822, e casos novos ao final, antes de `BOOST_AUTO_TEST_SUITE_END()` na linha 1065)
 
 **Interfaces:**
 - Consumes: `TestDb` (métodos `ddl`, `exec`, `commit`, `ids`, `one`, `refresh`), `checkSamePlanResult(TestDb&, const char* label, const std::string& query, const std::string& naturalPlan, const std::string& indexPlan)`, `withPlan(const std::string&, const std::string&)`, macro `LTZ_TEST_CASE(name)`, domínio `D_LTZ` (`VARCHAR(20) CHARACTER SET WIN1252 COLLATE LTZ`) criado pelo construtor do `TestDb`.
 - Produces: nada consumido por outras tasks.
 
-- [ ] **Step 1: Escrever os casos novos**
+- [ ] **Step 1: Variar o tamanho normalizado dentro do caso composto**
+
+O caso `CompoundIndex` que já existe só usa valores que normalizam para tamanho 0 ou 1, então o prefixo de tamanho nunca varia entre segmentos e a interação com os stuff bytes não é exercida. Acrescentar duas linhas aos `INSERT` do caso (hoje linhas 795-802), antes do `db.commit()`:
+
+```cpp
+	db.exec("INSERT INTO C1 VALUES (9, '0AB',  '12345678901')");
+	db.exec("INSERT INTO C1 VALUES (10, 'AB',  '00012345678901')");
+```
+
+E acrescentar, depois do último `checkSamePlanResult` do caso:
+
+```cpp
+	checkSamePlanResult(db, "compound, segments of different normalized lengths",
+		"SELECT CAST(ID AS BIGINT) FROM C1 WHERE A = 'AB' AND B = '12345678901' ORDER BY ID",
+		"SORT ((C1 NATURAL))", "SORT ((C1 INDEX (IX_C1)))");
+
+	// Both rows are the same pair of equivalence classes, so both must come
+	// back through either plan.
+	BOOST_CHECK_EQUAL(db.one(
+		"SELECT CAST(COUNT(*) AS BIGINT) FROM C1 WHERE A = 'ab' AND B = '12345678901'"), 2);
+```
+
+- [ ] **Step 2: Escrever os casos novos**
 
 Acrescentar em `src/jrd/tests/LtrimZeroCollationTest.cpp`, antes de `BOOST_AUTO_TEST_SUITE_END()	// LtrimZeroSuite`:
 
@@ -1033,19 +1109,31 @@ LTZ_TEST_CASE(NumericOrderAndRange)
 
 	db.ddl("CREATE INDEX IX_N1_V ON N1(V)");
 
-	// Ids 2 and 3 are the same class, so ID is the tie breaker.
+	// Sort keys: the plan carries a SORT, so what is being checked is the
+	// order INTL_KEY_SORT produces. Ids 2 and 3 are the same class, so ID is
+	// the tie breaker.
 	{
 		const IdList expected = { 1, 2, 3, 4, 5, 6, 7, 8, 9 };
 
 		const IdList sorted = db.ids(
 			"SELECT CAST(ID AS BIGINT) FROM N1"
 			" PLAN SORT (N1 NATURAL) ORDER BY V, ID");
-		const IdList navigated = db.ids(
-			"SELECT CAST(ID AS BIGINT) FROM N1"
-			" PLAN SORT (N1 ORDER IX_N1_V) ORDER BY V, ID");
 
 		BOOST_CHECK_EQUAL_COLLECTIONS(expected.begin(), expected.end(),
 			sorted.begin(), sorted.end());
+	}
+
+	// Index navigation: no SORT in the plan, so the order comes from walking
+	// the b-tree. Rows of the same class are ties whose relative order is not
+	// defined, so the projection is the normalized length, which is equal for
+	// tied rows and is exactly what the key prefix encodes.
+	{
+		const IdList expected = { 0, 1, 1, 1, 2, 4, 11, 14, 14 };
+
+		const IdList navigated = db.ids(
+			"SELECT CAST(CHAR_LENGTH(TRIM(LEADING '0' FROM TRIM(V))) AS BIGINT)"
+			" FROM N1 PLAN (N1 ORDER IX_N1_V) ORDER BY V");
+
 		BOOST_CHECK_EQUAL_COLLECTIONS(expected.begin(), expected.end(),
 			navigated.begin(), navigated.end());
 	}
@@ -1114,8 +1202,7 @@ LTZ_TEST_CASE(StartingWithMatchesNaturalScan)
 		"K1",		// matches a subset
 		"00",		// fully strippable prefix
 		"0000",		// fully strippable, longer
-		"ZZZ",		// matches nothing
-		""			// empty prefix, matches everything
+		"ZZZ"		// matches nothing
 	};
 
 	for (const char* prefix : prefixes)
@@ -1132,6 +1219,13 @@ LTZ_TEST_CASE(StartingWithMatchesNaturalScan)
 	checkSamePlanResult(db, "LIKE 'K1%'",
 		"SELECT CAST(ID AS BIGINT) FROM S1 WHERE V LIKE 'K1%' ORDER BY ID",
 		"SORT ((S1 NATURAL))", "SORT ((S1 INDEX (IX_S1_V)))");
+
+	// The empty prefix matches every row. It is checked without forcing a
+	// plan, because the plan validator may refuse an index for a predicate it
+	// considers unbounded, and that refusal would be an engine decision, not a
+	// collation result.
+	BOOST_CHECK_EQUAL(db.one("SELECT CAST(COUNT(*) AS BIGINT) FROM S1 WHERE V STARTING WITH ''"),
+		db.one("SELECT CAST(COUNT(*) AS BIGINT) FROM S1"));
 }
 
 
@@ -1215,7 +1309,7 @@ LTZ_TEST_CASE(DescendingIndexAtVolume)
 }
 ```
 
-- [ ] **Step 2: Rodar a suíte, esperando sucesso**
+- [ ] **Step 3: Rodar a suíte, esperando sucesso**
 
 ```
 cmd /c 'cd /d D:\GitHub\firebird\builds\win32 & set PATH=.;%PATH% & call make_all.bat'
@@ -1226,7 +1320,7 @@ Esperado: `*** No errors detected`, com os casos antigos (`ConcurrentVolumeAndVa
 
 Se `CollationIsInstalled` falhar, o problema é a árvore de runtime e não o código; conferir que `temp\x64\Release\firebird\intl\fbintl.dll` e `fbintl.conf` existem.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add src/jrd/tests/LtrimZeroCollationTest.cpp
@@ -1286,26 +1380,81 @@ INSERT INTO T_RANGE VALUES ('12345678901');
 COMMIT;
 ```
 
-- [ ] **Step 2: Conferir que os demais casos do script continuam válidos**
+- [ ] **Step 2: Reenquadrar o bloco 6b, que perde 2 bytes de cauda**
+
+Este é o único outro caso do script que muda, e muda para pior. Conferir empiricamente antes de editar, rodando só o bloco 6b, porque a conclusão abaixo vem de leitura de código e não de execução.
+
+O raciocínio: `INTL_key_length` (`intl.cpp:1002-1019`) calcula `key_length(12000)`, que agora devolve 12002, corta em `MAX_KEY = 8192` e depois **eleva de volta** para `iLength`, ou seja 12000. O driver recebe então `dstLen = 12000` para uma chave que queria 12002, escreve 2 bytes de prefixo mais 11998 de corpo, e o byte que distingue os dois valores do teste fica no índice 11999, cortado. A coluna `P`, de collation padrão, não passa por `key_length` (`intl.cpp:1003-1004`) e continua com 12000 bytes crus, que distinguem.
+
+Resultado esperado: `6b.1` (GROUP BY) e `6b.3` (DISTINCT) passam a devolver 1 para `V` contra 2 para `P`, e `6b.2` (ORDER BY) passa a devolver uma ordem arbitrária entre os dois, porque as chaves ficam idênticas.
+
+Isso não é regressão nova de correção, é a truncagem de `MAX_KEY` que já existia ficando 2 bytes mais apertada, exatamente como a seção 4.1 da spec registra. Mas o bloco 6b foi escrito como teste discriminante ("uma diferença entre V e P seria regressão deste driver"), e agora existe diferença, então o bloco precisa dizer a verdade nova em vez de falhar.
+
+Reescrever o comentário de cabeçalho do bloco 6b e os três casos, marcando-os como informativos (`KIND = 'I'`, como o `9.1` era) e trocando as expectativas:
+
+```sql
+/* ------------------------------------------------------------------ */
+/* 6b. Values whose NORMALIZED form is longer than MAX_KEY (8192)      */
+/*     The engine caps the sort key at the raw field length            */
+/*     (intl.cpp:1002-1019) and does not check the return of           */
+/*     string_to_key (SortedStream.cpp:265), so a value wider than     */
+/*     MAX_KEY has always had its key truncated. The length prefix     */
+/*     this collation writes costs 2 more bytes of tail, so two values */
+/*     that differ only in their last 2 bytes now collapse into one    */
+/*     key where the default collation still tells them apart.         */
+/*     Recorded here, not asserted as equality with the default        */
+/*     collation: it only reaches columns wider than 8192 bytes.       */
+/* ------------------------------------------------------------------ */
+```
+
+```sql
+INSERT INTO TST (KIND, NAME, EXPECTED, ACTUAL)
+SELECT 'I', '6b.1 KNOWN LIMIT: over MAX_KEY the last 2 bytes no longer separate keys',
+       '1',
+       CAST((SELECT COUNT(*) FROM (SELECT V FROM T_BIGKEY GROUP BY V)) AS VARCHAR(80))
+FROM RDB$DATABASE;
+
+INSERT INTO TST (NAME, EXPECTED, ACTUAL)
+SELECT '6b.1b the default collation still separates them, as the control',
+       '2',
+       CAST((SELECT COUNT(*) FROM (SELECT P FROM T_BIGKEY GROUP BY P)) AS VARCHAR(80))
+FROM RDB$DATABASE;
+```
+
+Aplicar o mesmo tratamento a `6b.3` (DISTINCT). Para `6b.2`, trocar a comparação de ordem por uma asserção de que a truncagem se dá **na cauda e não no prefixo**, que é o que sustenta a seção 4.1 da spec:
+
+```sql
+INSERT INTO TST (NAME, EXPECTED, ACTUAL)
+SELECT '6b.2 values of different normalized length still sort apart over MAX_KEY', '2',
+       CAST((SELECT COUNT(*) FROM (
+              SELECT V FROM T_BIGKEY
+              UNION
+              SELECT LPAD(_WIN1252 'A', 11000, _WIN1252 'X') FROM RDB$DATABASE
+            )) AS VARCHAR(80))
+FROM RDB$DATABASE;
+```
+
+Se a execução do bloco 6b mostrar comportamento diferente do descrito, **parar e reconciliar** antes de editar: a leitura de `intl.cpp` acima é a única base dessa previsão.
+
+- [ ] **Step 3: Conferir que os demais casos do script continuam válidos**
 
 Não mexer em nada, só confirmar por leitura antes de rodar:
 - `6.5` espera `1,3,2`. Os três valores normalizam para `A`, `B` e `A`, todos de tamanho 1, então a ordem não muda.
-- `6b.2` compara a ordem de `V` (LTRIM_ZERO) com a de `P` (collation padrão) sobre dois valores de 12000 bytes sem nada removível. Mesmo tamanho normalizado, então continua decidido byte a byte e continua batendo.
 - `8.6`, `8.6b`, `8.6c` e `8.7` comparam `STARTING WITH` entre plano natural e plano de índice. A chave parcial vazia vira varredura completa com filtro residual, então as contagens continuam iguais.
 - `4.6` compara dois planos entre si; é auto-consistente.
 
-- [ ] **Step 3: Rodar o script contra o build local**
+- [ ] **Step 4: Rodar o script contra o build local**
 
 ```
 D:\GitHub\firebird\temp\x64\Release\firebird\isql.exe -u SYSDBA -p masterkey ^
   -i D:\GitHub\firebird\test_ltrim_zero.sql -o D:\GitHub\firebird\ltz_local_after.txt
 ```
 
-Esperado: nenhuma linha de falha no relatório final do script. Conferir explicitamente que `9.1` e `9.2` aparecem como OK.
+Esperado: nenhuma linha de falha no relatório final do script. Conferir explicitamente que `9.1`, `9.2` e os casos reescritos do bloco 6b aparecem como OK.
 
 Lembrete: `isql` embedded não abre banco que o servidor está usando, e vice-versa. Se aparecer "O arquivo já está sendo usado por outro processo", parar o serviço ou usar outro caminho de banco.
 
-- [ ] **Step 4: Atualizar a documentação da collation**
+- [ ] **Step 5: Atualizar a documentação da collation**
 
 Em `doc/README.ltrim_zero.md`:
 - descrever a ordem: tamanho do normalizado primeiro, depois byte a byte em caixa alta;
@@ -1313,11 +1462,12 @@ Em `doc/README.ltrim_zero.md`:
 - deixar explícito que a igualdade não mudou e que `'000123' = '123'` continua verdadeiro;
 - registrar que `STARTING WITH` e `LIKE 'x%'` sobre coluna indexada passam a varrer o índice inteiro, com resultado correto e plano pior;
 - registrar que `BETWEEN` mudou de significado além do caso CNPJ: `BETWEEN '9' AND '11'` passa a incluir todo valor de tamanho 1 maior que `9`, inclusive letras, antes de chegar em `10`;
+- registrar o limite de cauda: em coluna mais larga que `MAX_KEY = 8192`, a chave já era truncada, e o prefixo custa 2 bytes a mais de cauda, então dois valores que difiram só nos 2 últimos bytes passam a colidir em `GROUP BY`, `DISTINCT` e índice. Não alcança coluna de 20 bytes como a do domínio `TDR_CNPJ`;
 - apontar para `doc/README.ltrim_zero_rollout.md` (criado na Task 6) para quem já tem índices no formato antigo.
 
 Em `doc/ltrim_zero_code_review.md`: revisar as afirmações que descrevem a chave como sendo a string normalizada e o `INTL_KEY_PARTIAL` como caso não especial, alinhando com o driver novo.
 
-- [ ] **Step 5: Corrigir a spec**
+- [ ] **Step 6: Corrigir a spec**
 
 Em `docs/superpowers/specs/2026-08-02-ltrim-zero-numeric-order-design.md`:
 
@@ -1353,7 +1503,23 @@ antigo enquanto o dll já fala o novo, e esse é o estado de resultado errado, n
 lento. O caminho é backup e restore.
 ```
 
-- [ ] **Step 6: Commit**
+Na seção 4.1, último parágrafo, trocar
+
+```
+Já é assim hoje; os 2 bytes só encolhem a margem.
+```
+
+por
+
+```
+Já é assim hoje, mas os 2 bytes não só encolhem a margem: acima de `MAX_KEY` o corte
+é na cauda, então dois valores que difiram apenas nos 2 últimos bytes passam a produzir
+a mesma chave e colidem em `GROUP BY`, `DISTINCT` e índice, onde a collation padrão
+ainda os separa. Só alcança coluna mais larga que 8192 bytes; a do domínio `TDR_CNPJ`
+tem 20.
+```
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add test_ltrim_zero.sql doc/README.ltrim_zero.md doc/ltrim_zero_code_review.md docs/superpowers/specs/2026-08-02-ltrim-zero-numeric-order-design.md
@@ -1381,7 +1547,7 @@ Esperado: mesma saída de `dumpbin` da Task 1 (dois exports sem decoração, só
 
 - [ ] **Step 2: Instalar num Firebird estoque e rodar a suíte SQL**
 
-Repetir os passos 5 e 6 da Task 1, agora com o dll novo, contra **um banco criado do zero** (o script já cria o seu).
+Repetir os passos 6 e 7 da Task 1, agora com o dll novo, contra **um banco criado do zero** (o script já cria o seu).
 
 ```
 "C:\Program Files\Firebird\Firebird_5_0\isql.exe" -u SYSDBA -p masterkey ^
