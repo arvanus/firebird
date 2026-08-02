@@ -55,6 +55,24 @@ normalizada.** Consequências:
 Igualdade não muda: `'000123' = '123'` continua verdadeiro, e a classe de equivalência
 segue sendo a forma normalizada.
 
+O tamanho que manda na ordem é o **da forma normalizada**, não o do valor gravado. É o
+que faz `0000009` e `9` caírem na mesma posição:
+
+| valor gravado | normalizado | tamanho | posição |
+|---|---|---|---|
+| `000` | (vazio) | 0 | 1ª |
+| `9` | `9` | 1 | 2ª, empatado |
+| `0000009` | `9` | 1 | 2ª, empatado |
+| `A` | `A` | 1 | 4ª |
+| `10` | `10` | 2 | 5ª |
+| `0001A34` | `1A34` | 4 | 6ª |
+| `12345678901` | `12345678901` | 11 | 7ª |
+| `12345678000199` | `12345678000199` | 14 | 8ª |
+
+Valores que só diferem nos zeros à esquerda continuam sendo iguais, e não apenas
+vizinhos: a ordem entre eles é indiferente, e num índice `UNIQUE` colidem, exatamente
+como já colidem hoje.
+
 ## 4. Chave de índice
 
 ```
