@@ -175,6 +175,7 @@ void	realign(BurpGlobals* tdgbl, UCHAR*, const burp_rel*);
 #ifdef sparc
 USHORT	recompute_length(BurpGlobals* tdgbl, burp_rel*);
 #endif
+static void	report_remap_overrides(BurpGlobals* tdgbl);
 static void	resolve_domain_remap(BurpGlobals* tdgbl);
 bool	restore(BurpGlobals* tdgbl, Firebird::IProvider*, const TEXT*, const TEXT*);
 void	restore_security_class(BurpGlobals* tdgbl, const TEXT*, const TEXT*);
@@ -5744,6 +5745,61 @@ static void resolve_domain_remap(BurpGlobals* tdgbl)
 
 	BURP_verbose(417, SafeArg() << (int) remapped << (int) remap.ruleCount());
 	// msg 417 remapped @1 domain(s), @2 rule(s) given
+}
+
+static void report_remap_overrides(BurpGlobals* tdgbl)
+{
+/**************************************
+ *
+ *	r e p o r t _ r e m a p _ o v e r r i d e s
+ *
+ **************************************
+ *
+ * Functional description
+ *	List columns that use a remapped domain but carry their own collation.
+ *	make_version gives the column's collation precedence over the domain's,
+ *	so these columns do not follow the remap. Only possible once the
+ *	relations exist, which is why it does not live in resolve_domain_remap.
+ *
+ **************************************/
+	if (!tdgbl->gbl_domain_remap)
+		return;
+
+	Burp::DomainRemap& remap = *tdgbl->gbl_domain_remap;
+
+	for (unsigned i = 0; i < remap.ruleCount(); ++i)
+	{
+		const Burp::RemapRule& rule = remap.rule(i);
+		Firebird::string lookupDomain = rule.domainName;
+		Firebird::IRequest* req_override = nullptr;
+
+		FOR (REQUEST_HANDLE req_override)
+			RFR IN RDB$RELATION_FIELDS
+			WITH RFR.RDB$FIELD_SOURCE EQ lookupDomain.c_str()
+			AND RFR.RDB$COLLATION_ID NOT MISSING
+
+			// Names come from GPRE blank padded, and printing them raw would
+			// put dozens of spaces in the middle of the message.
+			TEXT relName[MAX_SQL_IDENTIFIER_SIZE];
+			TEXT fldName[MAX_SQL_IDENTIFIER_SIZE];
+
+			MISC_terminate(RFR.RDB$RELATION_NAME, relName,
+				MISC_symbol_length(RFR.RDB$RELATION_NAME, sizeof(RFR.RDB$RELATION_NAME)),
+				sizeof(relName));
+			MISC_terminate(RFR.RDB$FIELD_NAME, fldName,
+				MISC_symbol_length(RFR.RDB$FIELD_NAME, sizeof(RFR.RDB$FIELD_NAME)),
+				sizeof(fldName));
+
+			BURP_print(false, 418, SafeArg() << relName << fldName <<
+				rule.domainName.c_str());
+			// msg 418 column @1.@2 keeps its own collation and does not follow domain @3
+		END_FOR;
+		ON_ERROR
+			general_on_error();
+		END_ERROR;
+
+		MISC_release_request_silent(req_override);
+	}
 }
 
 bool get_global_field(BurpGlobals* tdgbl)
@@ -11354,6 +11410,9 @@ bool restore(BurpGlobals* tdgbl, Firebird::IProvider* provider, const TEXT* file
 	END_ERROR;
 
 	MISC_release_request_silent(req_handle6);
+
+	// The relations exist by now, which is what this report needs.
+	report_remap_overrides(tdgbl);
 
 	return true;
 }
