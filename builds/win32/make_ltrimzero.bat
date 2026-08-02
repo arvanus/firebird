@@ -10,8 +10,11 @@
 :: boundary: the engine owns every buffer the entry points touch.
 ::
 :: Compile flags mirror the Release x64 settings of intl.vcxproj and
-:: FirebirdCommon.props, except for /MT (props use /MD) and for INTL_EXPORTS,
-:: which fbintl uses only for its own resource script.
+:: FirebirdCommon.props, including /EHsc- (FirebirdCommon.props:11), with
+:: /MT as the one deliberate deviation (props use /MD). INTL_EXPORTS, which
+:: intl.vcxproj defines, is left out on purpose: it is an unused define in
+:: fbintl's build, not referenced by any .rc or source file, so this module
+:: does not need it either.
 ::
 :: Usage, from builds\win32, after setenvvar.bat:
 ::     make_ltrimzero.bat
@@ -29,7 +32,7 @@
 @if not exist "%LTZ_OUT%" mkdir "%LTZ_OUT%"
 
 cl /nologo ^
-   /O2 /MT /GR- /std:c++17 /W3 ^
+   /O2 /MT /GR- /EHsc- /std:c++17 /W3 ^
    /D NDEBUG /D _WINDOWS /D _USRDLL /D WINDOWS_ONLY /D SUPERCLIENT ^
    /D WIN32 /D _CRT_SECURE_NO_WARNINGS ^
    /I "%FB_ROOT_PATH%\src" ^

@@ -44,9 +44,11 @@ Output: `builds\win32\ltrimzero\fbltrimzero.dll` and
 
 ## The `/MT` decision
 
-`make_ltrimzero.bat` links the module against the static CRT (`/MT`), unlike
-`intl.vcxproj` and `FirebirdCommon.props`, which use `/MD`. This is
-deliberate: `/MT` means the module never depends on a Visual C++
+`make_ltrimzero.bat`'s compile line mirrors the Release x64 settings of
+`intl.vcxproj` and `FirebirdCommon.props`, including `/EHsc-`
+(`FirebirdCommon.props:11`), with exactly one deliberate deviation: it links
+the module against the static CRT (`/MT`) where those files use `/MD`. This
+is deliberate: `/MT` means the module never depends on a Visual C++
 redistributable being present on the target machine, which matters because
 this module is meant to be dropped into a customer's existing Firebird
 install rather than built and installed alongside it.
@@ -57,6 +59,11 @@ no state; the two exported entry points only read and write buffers that the
 engine itself owns. Mixing CRTs is a problem when one side frees memory the
 other side allocated, or when C++ exceptions unwind across the boundary;
 neither happens here.
+
+`intl.vcxproj` also defines `INTL_EXPORTS` for `fbintl`, but that define is
+unused: it appears in no `.rc` file and no source file in the tree, only in
+`intl.vcxproj`'s own preprocessor definitions. `make_ltrimzero.bat` omits it
+on purpose, and omitting it changes nothing observable.
 
 ## Verifying the build
 
