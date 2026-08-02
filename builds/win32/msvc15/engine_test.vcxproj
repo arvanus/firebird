@@ -189,6 +189,9 @@
     <ClCompile Include="..\..\..\src\jrd\tests\LtrimZeroCollationTest.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\..\src\jrd\tests\LtrimZeroKeyTest.cpp" />
+  </ItemGroup>
+  <ItemGroup>
     <ClCompile Include="..\..\..\src\jrd\tests\RecordNumberTest.cpp" />
   </ItemGroup>
   <ItemGroup>

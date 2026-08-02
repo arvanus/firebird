@@ -36,12 +36,25 @@
  *  Implementation notes:
  *
  *  - compare() and string_to_key() share the same normalization primitive
- *    (normalize_bounds) on purpose. The sort key IS the normalized string,
- *    so byte order of the keys reproduces exactly the order returned by
- *    compare(), including the "shorter prefix sorts first" rule used by
- *    the b-tree (btr.cpp find_node_start_point). Keep them in sync: if
- *    they ever diverge, UNIQUE constraints and DISTINCT stop agreeing
- *    with '='. For the same reason TEXTTYPE_SEPARATE_UNIQUE is not needed.
+ *    (normalize_bounds) on purpose, and both order by the LENGTH of the
+ *    normalized form before its bytes. The sort key is that length as two
+ *    big endian bytes followed by the normalized string in upper case, so a
+ *    byte comparison of two keys reproduces compare() exactly, which is what
+ *    the b-tree relies on. Keep them in sync: if they ever diverge, UNIQUE
+ *    constraints and DISTINCT stop agreeing with '='. For the same reason
+ *    TEXTTYPE_SEPARATE_UNIQUE is not needed.
+ *
+ *  - Ordering by length first is what makes the collation behave numerically
+ *    for values that are digit strings of different widths: '9' sorts before
+ *    '0001A34', and BETWEEN over a range of 14 digit values does not swallow
+ *    an 11 digit one. Equality is unchanged: '000123' still equals '123'.
+ *
+ *  - INTL_KEY_PARTIAL returns an empty key, because with the length in front
+ *    the key of a prefix is not a prefix of the key of the value. The engine
+ *    turns an empty starting key into a full index scan and re-checks
+ *    blr_starting against the record, so STARTING WITH and LIKE 'x%' stay
+ *    correct and only lose the index range. See the comment inside
+ *    texttype_fn_str_to_key for the exact chain.
  *
  *  - No dynamic allocation and no temporary buffers anywhere. INTL
  *    callbacks are invoked by the engine without any exception barrier
@@ -52,9 +65,10 @@
  *    goes through texttype_fn_canonical, which is a per-character mapping
  *    and therefore cannot express removal of leading zeros. Canonical form
  *    here is plain uppercasing, so pattern matching is case-insensitive but
- *    NOT zero-insensitive. As a consequence STARTING WITH may return
- *    different rows depending on whether an index is used. Use '=' with
- *    this collation, or an expression index on a normalized column.
+ *    NOT zero-insensitive. STARTING WITH is still evaluated over the record
+ *    after the index scan, so both plans return the same rows; what changes
+ *    is that the index no longer narrows the range. Use '=' with this
+ *    collation, or an expression index on a normalized column.
  *
  *  - str_to_upper / str_to_lower are deliberately NOT installed so that
  *    UPPER()/LOWER() keep using the engine's ICU based case folding and
@@ -121,7 +135,18 @@ static SSHORT texttype_fn_compare(texttype* obj,
 	const UCHAR* e2;
 	normalize_bounds(pad, str2, len2, p2, e2);
 
-	while (p1 < e1 && p2 < e2)
+	// Numeric ordering: the shorter normalized form always sorts first,
+	// whatever its bytes are. This is what puts '9' before '0001A34' and what
+	// keeps BETWEEN over a range of same length values from swallowing a
+	// shorter one. The keys built below reproduce this by carrying the length
+	// in front.
+	const ULONG n1 = (ULONG) (e1 - p1);
+	const ULONG n2 = (ULONG) (e2 - p2);
+
+	if (n1 != n2)
+		return (n1 < n2) ? -1 : 1;
+
+	while (p1 < e1)
 	{
 		const UCHAR c1 = ascii_toupper(*p1++);
 		const UCHAR c2 = ascii_toupper(*p2++);
@@ -130,14 +155,6 @@ static SSHORT texttype_fn_compare(texttype* obj,
 			return (c1 < c2) ? -1 : 1;
 	}
 
-	// Equal prefixes: the shorter normalized string sorts first.
-	// This matches the byte ordering of the keys built below.
-	if (p1 < e1)
-		return 1;
-
-	if (p2 < e2)
-		return -1;
-
 	return 0;
 }
 
@@ -145,49 +162,79 @@ static SSHORT texttype_fn_compare(texttype* obj,
 static USHORT texttype_fn_str_to_key(texttype* obj,
 									 USHORT srcLen, const UCHAR* src,
 									 USHORT dstLen, UCHAR* dst,
-									 USHORT /*key_type*/)
+									 USHORT key_type)
 {
 	fb_assert(src != NULL || srcLen == 0);
 	fb_assert(dst != NULL);
+
+	// A partial key cannot exist in this format. The key starts with the
+	// length of the WHOLE normalized string, so the key of a prefix is not a
+	// byte prefix of the key of the value, and no amount of padding makes it
+	// one. An empty key is the safe answer: BTR_make_key flags it as empty
+	// (btr.cpp:1900), a fuzzy scan with an empty key does not stop early
+	// (btr.cpp:1904-1908, 6893, 6939) and turns into a full index scan, and
+	// blr_starting is re-evaluated over the record afterwards
+	// (Optimizer.cpp:3008-3035), so STARTING WITH stays correct and only gets
+	// slower.
+	//
+	// INTL_BAD_KEY_LENGTH must NOT be used for this. The return value is not
+	// checked (intl.cpp:1245-1249, btr.cpp:2882) and btr.cpp:2926 truncates
+	// (USHORT) -1 into the maximum key size, building a key out of
+	// uninitialized buffer memory.
+	if (key_type == INTL_KEY_PARTIAL)
+		return 0;
 
 	const UCHAR* p;
 	const UCHAR* end;
 	normalize_bounds(obj->texttype_pad_option != 0, src, srcLen, p, end);
 
-	// The key is the normalized string itself, for every key type.
-	//
-	// INTL_KEY_UNIQUE is identical to INTL_KEY_SORT because the sort key
-	// already defines the equality class exactly.
-	//
-	// INTL_KEY_PARTIAL needs no special case either: the normalized form of
-	// a prefix is always a byte prefix of the normalized form of the whole
-	// string, since characters are only removed at the very beginning. A
-	// prefix made only of zeros and spaces normalizes to an empty key, which
-	// the engine turns into a full scan of the index (btr.cpp), so no row is
-	// ever missed.
+	const USHORT len = (USHORT) (end - p);
 
-	USHORT len = 0;
-
-	while (p < end)
+	// [2 bytes: length of the normalized form, big endian][normalized bytes]
+	//
+	// Big endian so that a plain byte comparison of two keys reproduces
+	// compare(): length first, content second. INTL_KEY_UNIQUE is identical to
+	// INTL_KEY_SORT, because this key already defines the equality class.
+	if (dstLen < 2)
 	{
-		if (len >= dstLen)
-			return INTL_BAD_KEY_LENGTH;
-
-		dst[len++] = ascii_toupper(*p++);
+		fb_assert(false);	// key_length() promised at least len + 2
+		return 0;
 	}
+
+	dst[0] = (UCHAR) (len >> 8);
+	dst[1] = (UCHAR) (len & 0xFF);
+
+	USHORT pos = 2;
+
+	while (p < end && pos < dstLen)
+		dst[pos++] = ascii_toupper(*p++);
+
+	// dstLen can legitimately be smaller than len + 2, so the loop above must
+	// stop on it and there is nothing to assert here. INTL_key_length caps the
+	// key at MAX_KEY = 8192 and then raises it back to the raw field length
+	// (intl.cpp:1013-1017), so a VARCHAR(12000) of non strippable characters
+	// gets dstLen = 12000 for a key that would want 12002. That truncation
+	// predates this change and is not checked by the caller
+	// (SortedStream.cpp:265). The length prefix stays truthful, so two values
+	// of different normalized length still get different keys even when both
+	// bodies are cut at the same point, which is strictly better than the old
+	// format, where truncation lost the distinction entirely.
 
 	// Do not pad the rest of dst. On the index path the engine passes
 	// dstLen = 32767 no matter how long the value is, and it uses only the
 	// returned length. Padding would memset 32 KB per key.
 
-	return len;
+	return pos;
 }
 
 
 static USHORT texttype_fn_key_length(texttype* /*obj*/, USHORT len)
 {
-	// The key never grows: normalization only removes characters.
-	return len;
+	// Normalization only removes characters, so the normalized part never
+	// exceeds len. The two extra bytes are the big endian length prefix
+	// written by texttype_fn_str_to_key. len comes from a column width, capped
+	// by MAX_COLUMN_SIZE (32767), so len + 2 cannot wrap a USHORT.
+	return len + 2;
 }
 
 
