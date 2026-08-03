@@ -75,7 +75,12 @@ ainda como estavam:
 |---|---|---|
 | `CNPJ = '06056181000154'` | 0 linhas | 1 linha |
 | `CNPJ BETWEEN '10000000000000' AND '99999999999999'` | 0 linhas | 139433 linhas |
-| `SELECT CNPJ FROM ENTIDADE PLAN (ENTIDADE ORDER PK_ENTIDADE) ORDER BY CNPJ` | 0 de 544149 | 544149 |
+| `SELECT CNPJ FROM ENTIDADE ORDER BY CNPJ` | 0 de 544149 | 544149 |
+
+A última linha é sem `PLAN` nenhum: o otimizador escolhe sozinho navegar pelo
+índice e a consulta devolve zero linha de 544149. Forçar
+`PLAN (ENTIDADE ORDER PK_ENTIDADE)` dá o mesmo zero;
+`PLAN (ENTIDADE NATURAL)` devolve as 544149.
 
 Nenhuma dessas consultas deu erro. O banco responde depressa e responde
 errado. É esse o estado em que a instalação fica entre a troca do dll e o
