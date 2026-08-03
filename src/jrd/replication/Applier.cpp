@@ -146,6 +146,10 @@ namespace
 		const MetaString& getMetaName()
 		{
 			const auto pos = getInt32();
+
+			if (pos < 0 || pos >= m_atoms.getCount())
+				malformed();
+
 			return m_atoms[pos];
 		}
 
@@ -153,7 +157,7 @@ namespace
 		{
 			const auto length = getInt32();
 
-			if (m_data + length > m_end)
+			if (length < 0 || m_end - m_data < length)
 				malformed();
 
 			const string str((const char*) m_data, length);
@@ -163,7 +167,7 @@ namespace
 
 		const UCHAR* getBinary(ULONG length)
 		{
-			if (m_data + length > m_end)
+			if (m_end - m_data < length)
 				malformed();
 
 			const auto ptr = m_data;
@@ -1289,6 +1293,9 @@ void Applier::doInsert(thread_db* tdbb, record_param* rpb, jrd_tra* transaction)
 
 	Savepoint::ChangeMarker marker(transaction->tra_save_point);
 
+	// This allows to use RDB$RECORD_VERSION in indices.
+	rpb->rpb_record->setTransactionNumber(transaction->tra_number);
+
 	VIO_store(tdbb, rpb, transaction);
 	IDX_store(tdbb, rpb, transaction);
 	if (m_enableCascade)
@@ -1385,6 +1392,9 @@ void Applier::doUpdate(thread_db* tdbb, record_param* orgRpb, record_param* newR
 	transaction->tra_repl_blobs.clear();
 
 	Savepoint::ChangeMarker marker(transaction->tra_save_point);
+
+	// This allows to use NEW.RDB$RECORD_VERSION in indices.
+	newRpb->rpb_record->setTransactionNumber(transaction->tra_number);
 
 	VIO_modify(tdbb, orgRpb, newRpb, transaction);
 	IDX_modify(tdbb, orgRpb, newRpb, transaction);

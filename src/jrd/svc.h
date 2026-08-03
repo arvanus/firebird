@@ -163,6 +163,11 @@ public:
 			|| checkForShutdown();
 	}
 
+	bool hasAuthBlock() override
+	{
+		return svc_auth_block.hasData();
+	}
+
 	// Get authentication block if present
 	unsigned int getAuthBlock(const unsigned char** bytes) override;
 
@@ -420,8 +425,8 @@ private:
 	// Size of data, placed into svc_stdin_buffer (set in put)
 	ULONG svc_stdin_user_size;
 	static const ULONG PRELOAD_BUFFER_SIZE = SVC_IO_BUFFER_SIZE;
-	// Handle of a thread to wait for when closing
-	Thread::Handle svc_thread;
+	// Thread to wait for when closing
+	Thread svc_thread;
 
 #ifdef DEV_BUILD
 	bool svc_debug;

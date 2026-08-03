@@ -1028,8 +1028,16 @@ void DdlNode::storeGlobalField(thread_db* tdbb, jrd_tra* transaction, MetaName& 
 			Arg::Gds(isc_dsql_max_arr_dim_exceeded));
 	}
 
+	bool implicitDomain = false;
+
 	if (name.isEmpty())
+	{
 		DYN_UTIL_generate_field_name(tdbb, name);
+		implicitDomain = true;
+	}
+
+	// Avoid the security class being assigned for implicit domains
+	AutoSetRestoreFlag<ULONG> noSecurityClass(&tdbb->tdbb_flags, implicitDomain ? TDBB_no_security_class : 0, true);
 
 	AutoCacheRequest requestHandle(tdbb, drq_s_fld_src, DYN_REQUESTS);
 
@@ -1113,7 +1121,8 @@ void DdlNode::storeGlobalField(thread_db* tdbb, jrd_tra* transaction, MetaName& 
 		}
 	}
 
-	storePrivileges(tdbb, transaction, name, obj_field, USAGE_PRIVILEGES);
+	if (!implicitDomain)
+		storePrivileges(tdbb, transaction, name, obj_field, USAGE_PRIVILEGES);
 }
 
 
@@ -1324,7 +1333,7 @@ void CommentOnNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 	Attachment* const attachment = transaction->tra_attachment;
 
 	Arg::StatusVector status;
-	string objNameStr = objName.toString();
+	const string objNameStr = objName.toString();
 
 	if (objType == obj_parameter)
 	{
@@ -1396,11 +1405,6 @@ void CommentOnNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 			SCL_check_view(tdbb, &dscName, SCL_alter);
 			break;
 
-		case obj_procedure:
-			dscName.makeText(objNameStr.length(), CS_METADATA, (UCHAR*) objName.identifier.c_str());
-			SCL_check_procedure(tdbb, &dscName, SCL_alter);
-			break;
-
 		case obj_trigger:
 			relationName = getTriggerRelationName(tdbb, transaction, objName.identifier);
 			if (relationName.isEmpty())
@@ -1413,8 +1417,20 @@ void CommentOnNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 			break;
 
 		case obj_udf:
-			dscName.makeText(objName.identifier.length(), CS_METADATA, (UCHAR*) objName.identifier.c_str());
-			SCL_check_function(tdbb, &dscName, SCL_alter);
+		case obj_procedure:
+			if (objName.package.hasData())
+			{
+				dscName.makeText(objName.package.length(), CS_METADATA, (UCHAR*) objName.package.c_str());
+				SCL_check_package(tdbb, &dscName, SCL_alter);
+			}
+			else
+			{
+				dscName.makeText(objName.identifier.length(), CS_METADATA, (UCHAR*) objName.identifier.c_str());
+				if (objType == obj_udf)
+					SCL_check_function(tdbb, &dscName, SCL_alter);
+				else
+					SCL_check_procedure(tdbb, &dscName, SCL_alter);
+			}
 			break;
 
 		case obj_blob_filter:
@@ -8368,6 +8384,12 @@ void DropRelationNode::deleteGlobalField(thread_db* tdbb, jrd_tra* transaction,
 				ARG.RDB$FIELD_SOURCE EQ FLD.RDB$FIELD_NAME)
 	{
 		DropDomainNode::deleteDimensionRecords(tdbb, transaction, globalName);
+
+		if (!FLD.RDB$SECURITY_CLASS.NULL)
+			deleteSecurityClass(tdbb, transaction, FLD.RDB$SECURITY_CLASS);
+
+		deletePrivilegesByRelName(tdbb, transaction, globalName, obj_field);
+
 		ERASE FLD;
 	}
 	END_FOR
@@ -12509,6 +12531,22 @@ string AlterDatabaseNode::internalPrint(NodePrinter& printer) const
 
 void AlterDatabaseNode::checkPermission(thread_db* tdbb, jrd_tra* transaction)
 {
+	Jrd::Attachment* const attachment = tdbb->getAttachment();
+
+	const unsigned nbackupClauses = CLAUSE_BEGIN_BACKUP | CLAUSE_END_BACKUP;
+
+	const bool hasNonBackupClauses =
+		(clauses & ~nbackupClauses) ||
+		differenceFile.hasData() ||
+		setDefaultCharSet.hasData() ||
+		setDefaultCollation.hasData() ||
+		linger >= 0 ||
+		ssDefiner.isAssigned() ||
+		cryptPlugin.hasData();
+
+	if (!hasNonBackupClauses && attachment->locksmith(tdbb, USE_NBACKUP_UTILITY))
+		return;
+
 	SCL_check_database(tdbb, SCL_alter);
 }
 

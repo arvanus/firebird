@@ -72,6 +72,12 @@ void ProcedureScan::internalOpen(thread_db* tdbb) const
 
 	const_cast<jrd_prc*>(m_procedure)->checkReload(tdbb);
 
+	// Procedure could be altered and its record format changed since current instance of
+	// ProcedureScan was created. Here it is not the right place to check if new format is
+	// compatible with caller's expectations, so we just use correct (possible new) format.
+
+	m_format = m_procedure->prc_record_format;
+
 	Request* const request = tdbb->getRequest();
 	Impure* const impure = request->getImpure<Impure>(m_impure);
 
@@ -229,6 +235,8 @@ bool ProcedureScan::internalGetRecord(thread_db* tdbb) const
 
 	trace.fetch(false, ITracePlugin::RESULT_SUCCESS);
 
+	fb_assert(m_format == m_procedure->prc_record_format);
+
 	for (USHORT i = 0; i < m_format->fmt_count; i++)
 	{
 		assignParams(tdbb, &msg_format->fmt_desc[2 * i], &msg_format->fmt_desc[2 * i + 1],
@@ -247,6 +255,12 @@ bool ProcedureScan::refetchRecord(thread_db* /*tdbb*/) const
 WriteLockResult ProcedureScan::lockRecord(thread_db* /*tdbb*/) const
 {
 	status_exception::raise(Arg::Gds(isc_record_lock_not_supp));
+}
+
+bool ProcedureScan::isDependent(const StreamList& streams) const
+{
+	return (m_sourceList && m_sourceList->containsAnyStream(streams)) ||
+		(m_targetList && m_targetList->containsAnyStream(streams));
 }
 
 void ProcedureScan::getChildren(Array<const RecordSource*>& children) const

@@ -100,8 +100,8 @@ public:
 		SharedObjType* sharedObj, IExternalContext* context,
 		SortedArray<SharedObjType*>& sharedObjs, const PathName& moduleName);
 
-	template <typename ObjType> void deleteChildren(
-		GenericMap<Pair<NonPooled<IExternalContext*, ObjType*> > >& children);
+	template <typename SharedObjType>
+	void sharedObjectCleanup(SharedObjType* sharedObj, SortedArray<SharedObjType*>& sharedObjs);
 
 	template <typename T> T* findNode(ThrowStatusWrapper* status,
 		const GenericMap<Pair<Left<string, T*> > >& nodes, const string& entryPoint);
@@ -285,7 +285,7 @@ public:
 
 	~SharedFunction()
 	{
-		engine->deleteChildren(children);
+		engine->sharedObjectCleanup(this, engine->functions);
 	}
 
 public:
@@ -347,7 +347,7 @@ public:
 
 	~SharedProcedure()
 	{
-		engine->deleteChildren(children);
+		engine->sharedObjectCleanup(this, engine->procedures);
 	}
 
 public:
@@ -408,7 +408,7 @@ public:
 
 	~SharedTrigger()
 	{
-		engine->deleteChildren(children);
+		engine->sharedObjectCleanup(this, engine->triggers);
 	}
 
 public:
@@ -507,7 +507,9 @@ UdrPluginImpl* Engine::loadModule(ThrowStatusWrapper* status, IRoutineMetadata* 
 
 	*moduleName = PathName(str.substr(0, pos).c_str());
 	// Do not allow module names with directory separators as a security measure.
-	if (moduleName->find_first_of("/\\") != string::npos)
+	if (moduleName->find_first_of("/\\") != string::npos ||
+		moduleName->equals(PathUtils::up_dir_link) ||
+		moduleName->isEmpty())
 	{
 		static const ISC_STATUS statusVector[] = {
 			isc_arg_gds, isc_random,
@@ -606,16 +608,17 @@ template <typename NodeType, typename ObjType, typename SharedObjType> ObjType* 
 }
 
 
-template <typename ObjType> void Engine::deleteChildren(
-	GenericMap<Pair<NonPooled<IExternalContext*, ObjType*> > >& children)
+template <typename SharedObjType>
+void Engine::sharedObjectCleanup(SharedObjType* sharedObj, SortedArray<SharedObjType*>& sharedObjs)
 {
-	// No need to lock childrenMutex as if there are more threads simultaneously accessing
-	// these children in this moment there will be a memory corruption anyway.
+	MutexLockGuard guard(childrenMutex, FB_FUNCTION);
 
-	typedef typename GenericMap<Pair<NonPooled<IExternalContext*, ObjType*> > >::Accessor ChildrenAccessor;
-	ChildrenAccessor accessor(&children);
-	for (bool found = accessor.getFirst(); found; found = accessor.getNext())
-		accessor.current()->second->dispose();
+	for (auto child : sharedObj->children)
+		child.second->dispose();
+
+	FB_SIZE_T pos;
+	if (sharedObjs.find(sharedObj, pos))
+		sharedObjs.remove(pos);
 }
 
 

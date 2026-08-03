@@ -175,6 +175,20 @@ namespace Firebird
 		return mp_cmp(const_cast<mp_int*>(&t), const_cast<mp_int*>(&val.t)) == 0;
 	}
 
+	bool BigInteger::operator< (int val) const
+	{
+		BigInteger bVal;
+		CHECK_MP(mp_set_int(&bVal.t, val));
+		return mp_cmp(const_cast<mp_int*>(&t), const_cast<mp_int*>(&bVal.t)) == MP_LT;
+	}
+
+	bool BigInteger::operator> (int val) const
+	{
+		BigInteger bVal;
+		CHECK_MP(mp_set_int(&bVal.t, val));
+		return mp_cmp(const_cast<mp_int*>(&t), const_cast<mp_int*>(&bVal.t)) == MP_GT;
+	}
+
 	void BigInteger::getBytes(Firebird::UCharBuffer& bytes) const
 	{
 		CHECK_MP(mp_to_unsigned_bin(const_cast<mp_int*>(&t), bytes.getBuffer(length())));

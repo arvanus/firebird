@@ -543,8 +543,11 @@ bool HashJoin::refetchRecord(thread_db* /*tdbb*/) const
 	return true;
 }
 
-WriteLockResult HashJoin::lockRecord(thread_db* /*tdbb*/) const
+WriteLockResult HashJoin::lockRecord(thread_db* tdbb) const
 {
+	if (m_joinType == SEMI_JOIN || m_joinType == ANTI_JOIN)
+		return m_leader.source->lockRecord(tdbb);
+
 	status_exception::raise(Arg::Gds(isc_record_lock_not_supp));
 }
 
@@ -625,6 +628,20 @@ void HashJoin::findUsedStreams(StreamList& streams, bool expandAll) const
 
 	for (FB_SIZE_T i = 0; i < m_args.getCount(); i++)
 		m_args[i].source->findUsedStreams(streams, expandAll);
+}
+
+bool HashJoin::isDependent(const StreamList& streams) const
+{
+	if (m_leader.source->isDependent(streams))
+		return true;
+
+	for (FB_SIZE_T i = 0; i < m_args.getCount(); i++)
+	{
+		if (m_args[i].source->isDependent(streams))
+			return true;
+	}
+
+	return (m_boolean && m_boolean->containsAnyStream(streams));
 }
 
 void HashJoin::invalidateRecords(Request* request) const

@@ -94,6 +94,7 @@ namespace Jrd
 		virtual void invalidateRecords(Request* request) const = 0;
 
 		virtual void findUsedStreams(StreamList& streams, bool expandAll = false) const = 0;
+		virtual bool isDependent(const StreamList& streams) const = 0;
 		virtual void nullRecords(thread_db* tdbb) const = 0;
 
 		virtual void setAnyBoolean(BoolExprNode* /*anyBoolean*/, bool /*ansiAny*/, bool /*ansiNot*/)
@@ -168,9 +169,14 @@ namespace Jrd
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
+		bool isDependent(const StreamList& /*streams*/) const override
+		{
+			return false;
+		}
+
 	protected:
 		const StreamType m_stream;
-		const Format* const m_format;
+		mutable const Format* m_format;
 	};
 
 
@@ -377,6 +383,7 @@ namespace Jrd
 
 		bool refetchRecord(thread_db* tdbb) const override;
 		WriteLockResult lockRecord(thread_db* tdbb) const override;
+		bool isDependent(const StreamList& streams) const;
 
 		void getChildren(Firebird::Array<const RecordSource*>& children) const override;
 
@@ -420,6 +427,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 	protected:
@@ -452,6 +460,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 	protected:
@@ -486,6 +495,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 		void setAnyBoolean(BoolExprNode* anyBoolean, bool ansiAny, bool ansiNot) override
@@ -526,6 +536,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 		void setAnyBoolean(BoolExprNode* anyBoolean, bool ansiAny, bool ansiNot) override
@@ -546,7 +557,7 @@ namespace Jrd
 	{
 	public:
 		FilteredStream(CompilerScratch* csb, RecordSource* next,
-					   BoolExprNode* boolean, double selectivity = 0);
+					   BoolExprNode* boolean, double selectivity);
 
 		void close(thread_db* tdbb) const override;
 
@@ -562,6 +573,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 		void setAnyBoolean(BoolExprNode* anyBoolean, bool ansiAny, bool ansiNot) override
@@ -575,10 +587,12 @@ namespace Jrd
 		}
 
 	protected:
+		FilteredStream(CompilerScratch* csb, RecordSource* next, BoolExprNode* boolean);
+
 		void internalOpen(thread_db* tdbb) const override;
 		bool internalGetRecord(thread_db* tdbb) const override;
 
-		bool m_invariant = false;
+		const bool m_invariant;
 
 	private:
 		bool evaluateBoolean(thread_db* tdbb) const;
@@ -586,9 +600,9 @@ namespace Jrd
 		NestConst<RecordSource> m_next;
 		NestConst<BoolExprNode> const m_boolean;
 		NestConst<BoolExprNode> m_anyBoolean;
-		bool m_ansiAny;
-		bool m_ansiAll;
-		bool m_ansiNot;
+		bool m_ansiAny = false;
+		bool m_ansiAll = false;
+		bool m_ansiNot = false;
 	};
 
 	class PreFilteredStream : public FilteredStream
@@ -597,9 +611,7 @@ namespace Jrd
 		PreFilteredStream(CompilerScratch* csb, RecordSource* next,
 						  BoolExprNode* boolean)
 			: FilteredStream(csb, next, boolean)
-		{
-			m_invariant = true;
-		}
+		{}
 	};
 
 	class SortedStream : public RecordSource
@@ -683,6 +695,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 		void setAnyBoolean(BoolExprNode* anyBoolean, bool ansiAny, bool ansiNot) override
@@ -834,6 +847,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 
 	protected:
 		void internalOpen(thread_db* tdbb) const override;
@@ -974,6 +988,7 @@ namespace Jrd
 
 			void print(thread_db* tdbb, Firebird::string& plan, bool detailed, unsigned level, bool recurse) const override;
 			void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+			bool isDependent(const StreamList& streams) const override;
 			void nullRecords(thread_db* tdbb) const override;
 
 		protected:
@@ -1021,6 +1036,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 	protected:
@@ -1089,6 +1105,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 		void locate(thread_db* tdbb, FB_UINT64 position) const override;
@@ -1134,6 +1151,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 	protected:
@@ -1169,6 +1187,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 	protected:
@@ -1228,6 +1247,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 		static unsigned maxCapacity();
@@ -1300,6 +1320,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 	protected:
@@ -1365,6 +1386,7 @@ namespace Jrd
 		void markRecursive() override;
 		void invalidateRecords(Request* request) const override;
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 
 	protected:
 		void internalOpen(thread_db* tdbb) const override;
@@ -1410,6 +1432,7 @@ namespace Jrd
 		void markRecursive() override;
 		void invalidateRecords(Request* request) const override;
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 
 	protected:
 		void internalOpen(thread_db* tdbb) const override;
@@ -1453,6 +1476,7 @@ namespace Jrd
 		void invalidateRecords(Request* request) const override;
 
 		void findUsedStreams(StreamList& streams, bool expandAll = false) const override;
+		bool isDependent(const StreamList& streams) const override;
 		void nullRecords(thread_db* tdbb) const override;
 
 	protected:

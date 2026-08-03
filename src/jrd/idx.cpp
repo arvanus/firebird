@@ -312,11 +312,26 @@ public:
 			}
 
 			FbLocalStatus status;
-			if (m_tra)
+			if (m_tra || m_idx.idx_expression_statement || m_idx.idx_condition_statement)
 			{
 				BackgroundContextHolder tdbb(att->att_database, att, &status, FB_FUNCTION);
-				TRA_commit(tdbb, m_tra, false);
+
+				if (m_tra)
+					TRA_commit(tdbb, m_tra, false);
+
+				if (m_idx.idx_expression_statement)
+				{
+					m_idx.idx_expression_statement->release(tdbb);
+					m_idx.idx_expression_statement = NULL;
+				}
+
+				if (m_idx.idx_condition_statement)
+				{
+					m_idx.idx_condition_statement->release(tdbb);
+					m_idx.idx_condition_statement = NULL;
+				}
 			}
+
 			WorkerAttachment::releaseAttachment(&status, m_attStable);
 		}
 
@@ -484,12 +499,6 @@ bool IndexCreateTask::handler(WorkItem& _item)
 	if (item->m_ppSequence == m_countPP)
 	{
 		//fb_assert((scb->scb_flags & scb_sorted) == 0);
-
-		if (item->m_ownAttach && idx->idx_expression_statement)
-		{
-			idx->idx_expression_statement->release(tdbb);
-			idx->idx_expression_statement = NULL;
-		}
 
 		if (!m_stop && m_creation->duplicates.value() == 0)
 			scb->sort(tdbb);
@@ -1939,6 +1948,9 @@ static idx_e check_partner_index(thread_db* tdbb,
 	// tmpIndex.idx_flags |= idx_unique;
 	tmpIndex.idx_flags = (tmpIndex.idx_flags & ~idx_unique) | (partner_idx.idx_flags & idx_unique);
 
+	// hvlad: The same about descending flag, it should be the same as in the partner index.
+	tmpIndex.idx_flags = (tmpIndex.idx_flags & ~idx_descending) | (partner_idx.idx_flags & idx_descending);
+
 	const auto keyType = starting ? INTL_KEY_PARTIAL :
 		(tmpIndex.idx_flags & idx_unique) ? INTL_KEY_UNIQUE : INTL_KEY_SORT;
 
@@ -1962,9 +1974,6 @@ static idx_e check_partner_index(thread_db* tdbb,
 
 		if (partner_idx.idx_flags & idx_descending)
 			retrieval.irb_generic |= irb_descending;
-
-		if ((idx->idx_flags & idx_descending) != (partner_idx.idx_flags & idx_descending))
-			BTR_complement_key(key);
 
 		RecordBitmap bm(*tdbb->getDefaultPool());
 		RecordBitmap* bitmap = &bm;

@@ -499,6 +499,7 @@ const ULONG TDBB_dfw_cleanup			= 4096;		// DFW cleanup phase is active
 const ULONG TDBB_repl_in_progress		= 8192;		// Prevent recursion in replication
 const ULONG TDBB_replicator				= 16384;	// Replicator
 const ULONG TDBB_async					= 32768;	// Async context (set in AST)
+const ULONG TDBB_no_security_class		= 65536;	// don't assign a security class to the object being created
 
 class thread_db : public Firebird::ThreadData
 {

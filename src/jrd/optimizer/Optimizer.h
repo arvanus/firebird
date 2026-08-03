@@ -83,75 +83,6 @@ class SortedStream;
 
 
 //
-// StreamStateHolder
-//
-
-class StreamStateHolder
-{
-public:
-	explicit StreamStateHolder(CompilerScratch* csb)
-		: m_csb(csb), m_streams(csb->csb_pool), m_flags(csb->csb_pool)
-	{
-		for (StreamType stream = 0; stream < csb->csb_n_stream; stream++)
-			m_streams.add(stream);
-
-		init();
-	}
-
-	StreamStateHolder(CompilerScratch* csb, const StreamList& streams)
-		: m_csb(csb), m_streams(csb->csb_pool), m_flags(csb->csb_pool)
-	{
-		m_streams.assign(streams);
-
-		init();
-	}
-
-	~StreamStateHolder()
-	{
-		for (FB_SIZE_T i = 0; i < m_streams.getCount(); i++)
-		{
-			const StreamType stream = m_streams[i];
-
-			if (m_flags[i >> 3] & (1 << (i & 7)))
-				m_csb->csb_rpt[stream].activate();
-			else
-				m_csb->csb_rpt[stream].deactivate();
-		}
-	}
-
-	void activate()
-	{
-		for (const auto stream : m_streams)
-			m_csb->csb_rpt[stream].activate();
-	}
-
-	void deactivate()
-	{
-		for (const auto stream : m_streams)
-			m_csb->csb_rpt[stream].deactivate();
-	}
-
-private:
-	void init()
-	{
-		m_flags.resize(FLAG_BYTES(m_streams.getCount()));
-
-		for (FB_SIZE_T i = 0; i < m_streams.getCount(); i++)
-		{
-			const StreamType stream = m_streams[i];
-
-			if (m_csb->csb_rpt[stream].csb_flags & csb_active)
-				m_flags[i >> 3] |= (1 << (i & 7));
-		}
-	}
-
-	CompilerScratch* const m_csb;
-	StreamList m_streams;
-	Firebird::HalfStaticArray<UCHAR, sizeof(SLONG)> m_flags;
-};
-
-
-//
 // River
 //
 
@@ -227,10 +158,106 @@ public:
 		return true;
 	}
 
+	bool isDependent(const StreamList& streams) const
+	{
+		return m_rsb->isDependent(streams);
+	}
+
+	bool isDependent(const River& river) const
+	{
+		return isDependent(river.getStreams());
+	}
+
 protected:
 	RecordSource* m_rsb;
 	Firebird::HalfStaticArray<RecordSourceNode*, OPT_STATIC_ITEMS> m_nodes;
 	StreamList m_streams;
+};
+
+
+//
+// StreamStateHolder
+//
+
+class StreamStateHolder
+{
+public:
+	explicit StreamStateHolder(CompilerScratch* csb)
+		: m_csb(csb), m_streams(csb->csb_pool), m_flags(csb->csb_pool)
+	{
+		for (StreamType stream = 0; stream < csb->csb_n_stream; stream++)
+			m_streams.add(stream);
+
+		init();
+	}
+
+	StreamStateHolder(CompilerScratch* csb, const StreamList& streams)
+		: m_csb(csb), m_streams(csb->csb_pool), m_flags(csb->csb_pool)
+	{
+		m_streams.assign(streams);
+
+		init();
+	}
+
+	StreamStateHolder(CompilerScratch* csb, const River* river)
+		: m_csb(csb), m_streams(csb->csb_pool), m_flags(csb->csb_pool)
+	{
+		m_streams.assign(river->getStreams());
+
+		init();
+	}
+
+	StreamStateHolder(CompilerScratch* csb, const RiverList& rivers)
+		: m_csb(csb), m_streams(csb->csb_pool), m_flags(csb->csb_pool)
+	{
+		for (const auto river : rivers)
+			m_streams.join(river->getStreams());
+
+		init();
+	}
+
+	~StreamStateHolder()
+	{
+		for (FB_SIZE_T i = 0; i < m_streams.getCount(); i++)
+		{
+			const StreamType stream = m_streams[i];
+
+			if (m_flags[i >> 3] & (1 << (i & 7)))
+				m_csb->csb_rpt[stream].activate();
+			else
+				m_csb->csb_rpt[stream].deactivate();
+		}
+	}
+
+	void activate()
+	{
+		for (const auto stream : m_streams)
+			m_csb->csb_rpt[stream].activate();
+	}
+
+	void deactivate()
+	{
+		for (const auto stream : m_streams)
+			m_csb->csb_rpt[stream].deactivate();
+	}
+
+private:
+	void init()
+	{
+		m_flags.resize(FLAG_BYTES(m_streams.getCount()));
+
+		for (FB_SIZE_T i = 0; i < m_streams.getCount(); i++)
+		{
+			const StreamType stream = m_streams[i];
+
+			if (m_csb->csb_rpt[stream].csb_flags & csb_active)
+				m_flags[i >> 3] |= (1 << (i & 7));
+		}
+	}
+
+	CompilerScratch* const m_csb;
+	StreamList m_streams;
+	Firebird::HalfStaticArray<UCHAR, sizeof(SLONG)> m_flags;
 };
 
 
@@ -430,6 +457,28 @@ public:
 		selectivity = minSelectivity + diffSelectivity * factor;
 	}
 
+	double getDependentSelectivity();
+
+	bool deliverJoinConjuncts(RseNode* subRse, const BoolExprNodeStack& stack)
+	{
+		// Determine whether the join conjunct(s) should be delivered to the inner RSE being joined.
+		// The decision is based on the parent (outer) cardinality and selectivity of the conjunct(s).
+
+		fb_assert(stack.hasData());
+
+		const auto selectivity = Optimizer(tdbb, csb, subRse, stack).getDependentSelectivity();
+
+		if (selectivity < MAXIMUM_SELECTIVITY)
+		{
+			if (cardinality)
+				return (cardinality * selectivity < MINIMUM_CARDINALITY);
+
+			return true;
+		}
+
+		return false;
+	}
+
 	static RecordSource* compile(thread_db* tdbb, CompilerScratch* csb, RseNode* rse)
 	{
 		bool firstRows = false;
@@ -470,17 +519,27 @@ public:
 
 	bool isInnerJoin() const
 	{
-		return (rse->rse_jointype == blr_inner);
+		return rse->isInnerJoin();
+	}
+
+	bool isSpecialJoin() const
+	{
+		return rse->isSpecialJoin();
+	}
+
+	bool isOuterJoin() const
+	{
+		return rse->isOuterJoin();
 	}
 
 	bool isLeftJoin() const
 	{
-		return (rse->rse_jointype == blr_left);
+		return rse->isLeftJoin();
 	}
 
 	bool isFullJoin() const
 	{
-		return (rse->rse_jointype == blr_full);
+		return rse->isFullJoin();
 	}
 
 	const StreamList& getOuterStreams() const
@@ -491,11 +550,6 @@ public:
 	bool favorFirstRows() const
 	{
 		return firstRows;
-	}
-
-	bool isSemiJoined() const
-	{
-		return (rse->flags & RseNode::FLAG_SEMI_JOINED) != 0;
 	}
 
 	RecordSource* applyBoolean(RecordSource* rsb, ConjunctIterator& iter);
@@ -514,21 +568,24 @@ public:
 
 private:
 	Optimizer(thread_db* aTdbb, CompilerScratch* aCsb, RseNode* aRse, bool parentFirstRows);
+	Optimizer(thread_db* aTdbb, CompilerScratch* aCsb, RseNode* aRse, const BoolExprNodeStack& stack);
 
 	RecordSource* compile(BoolExprNodeStack* parentStack);
 
 	void checkIndices();
 	void checkSorts();
 	unsigned distributeEqualities(BoolExprNodeStack& orgStack, unsigned baseCount);
-	void findDependentStreams(const StreamList& streams,
-							  StreamList& dependent_streams,
-							  StreamList& free_streams);
+	void findDependentStreams(const RiverList& rivers,
+							  const StreamList& streams,
+							  StreamList& dependentStreams,
+							  StreamList& freeStreams);
+	bool joinDependentStreams(StreamList& joinStreams, RiverList& rivers, SortNode** sort);
 	void formRivers(const StreamList& streams,
 					RiverList& rivers,
 					SortNode** sortClause,
 					const PlanNode* planClause);
 	bool generateEquiJoin(RiverList& rivers, JoinType joinType = INNER_JOIN);
-	void generateInnerJoin(StreamList& streams,
+	void generateInnerJoin(const StreamList& streams,
 						   RiverList& rivers,
 						   SortNode** sortClause,
 						   const PlanNode* planClause);
@@ -552,6 +609,7 @@ private:
 	RseNode* const rse;
 
 	bool firstRows = false;					// optimize for first rows
+	double cardinality = 0;					// self or parent cardinality
 
 	FILE* debugFile = nullptr;
 	unsigned baseConjuncts = 0;				// number of conjuncts in our rse, next conjuncts are distributed parent

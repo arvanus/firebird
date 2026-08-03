@@ -206,13 +206,13 @@ namespace
 
 						for (auto& subRiver : rivers)
 						{
-							auto subRsb = subRiver->getRecordSource();
-
 							subRiver->activate(csb);
-							subRsb = opt->applyBoolean(subRsb, iter);
 
 							if (subRiver->isComputable(csb))
 							{
+								auto subRsb = subRiver->getRecordSource();
+								subRsb = opt->applyBoolean(subRsb, iter);
+
 								rsbs.add(subRsb);
 								rivers.remove(&subRiver);
 								break;
@@ -231,13 +231,12 @@ namespace
 
 						for (auto& subRiver : rivers)
 						{
-							auto subRsb = subRiver->getRecordSource();
-
 							subRiver->activate(csb);
+
+							auto subRsb = subRiver->getRecordSource();
 							subRsb = opt->applyBoolean(subRsb, iter);
 
-							const auto pos = &subRiver - rivers.begin();
-							rsbs.insert(pos, subRsb);
+							rsbs.add(subRsb);
 						}
 
 						rivers.clear();
@@ -621,6 +620,37 @@ Optimizer::Optimizer(thread_db* aTdbb, CompilerScratch* aCsb, RseNode* aRse, boo
 }
 
 
+Optimizer::Optimizer(thread_db* aTdbb, CompilerScratch* aCsb, RseNode* aRse,
+					 const BoolExprNodeStack& stack)
+	: PermanentStorage(*aTdbb->getDefaultPool()),
+	  tdbb(aTdbb), csb(aCsb), rse(aRse),
+	  compileStreams(getPool()),
+	  bedStreams(getPool()),
+	  keyStreams(getPool()),
+	  outerStreams(getPool()),
+	  conjuncts(getPool())
+{
+	for (BoolExprNodeStack::const_iterator iter(stack); iter.hasData(); ++iter)
+	{
+		const auto boolean = iter.object();
+
+		conjuncts.add({boolean, 0});
+		baseConjuncts++;
+		baseParentConjuncts++;
+		baseMissingConjuncts++;
+	}
+
+	StreamList rseStreams;
+	rse->computeRseStreams(rseStreams);
+
+	for (const auto stream : rseStreams)
+	{
+		if (csb->csb_rpt[stream].csb_relation)
+			compileRelation(stream);
+	}
+}
+
+
 //
 // Destructor
 //
@@ -652,20 +682,37 @@ RecordSource* Optimizer::compile(RseNode* subRse, BoolExprNodeStack* parentStack
 	Optimizer subOpt(tdbb, csb, subRse, subFirstRows);
 	const auto rsb = subOpt.compile(parentStack);
 
-	if (parentStack && subOpt.isInnerJoin())
+	if (parentStack && !subRse->isFullJoin())
 	{
 		// If any parent conjunct was utilized, update our copy of its flags.
-		// Currently used for inner joins only, although could also be applied
-		// to conjuncts utilized for outer streams of outer joins.
+		// Except those utilized for inner streams of outer joins, they must be re-checked.
 
 		for (auto subIter = subOpt.getParentConjuncts(); subIter.hasData(); ++subIter)
 		{
-			for (auto selfIter = getConjuncts(); selfIter.hasData(); ++selfIter)
+			if (subIter & CONJUNCT_USED)
 			{
-				if (*selfIter == *subIter)
+				for (auto selfIter = getConjuncts(); selfIter.hasData(); ++selfIter)
 				{
-					selfIter |= subIter.getFlags();
-					break;
+					if (*selfIter == *subIter)
+					{
+						if (subRse->isInnerJoin())
+						{
+							selfIter |= subIter.getFlags();
+						}
+						else if (subRse->isOuterJoin())
+						{
+							const auto innerSubRse = subRse->rse_relations[1];
+							StreamList innerSubStreams;
+							innerSubRse->computeRseStreams(innerSubStreams);
+
+							if (!subIter->containsAnyStream(innerSubStreams))
+							{
+								selfIter |= subIter.getFlags();
+							}
+						}
+
+						break;
+					}
 				}
 			}
 		}
@@ -703,7 +750,7 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 	// AB: If we have limit our retrieval with FIRST / SKIP syntax then
 	// we may not deliver above conditions (from higher rse's) to this
 	// rse, because the results should be consistent.
-	if (rse->rse_skip || rse->rse_first || isSemiJoined())
+	if (rse->rse_skip || rse->rse_first)
 		parentStack = nullptr;
 
 	// Set base-point before the parent/distributed nodes begin.
@@ -734,7 +781,7 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 		{
 			const auto node = iter.object();
 
-			if (!isInnerJoin() && node->possiblyUnknown())
+			if (isOuterJoin() && node->possiblyUnknown())
 			{
 				// parent missing conjunctions shouldn't be
 				// distributed to FULL OUTER JOIN streams at all
@@ -845,7 +892,8 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 	// Go through the record selection expression generating
 	// record source blocks for all streams
 
-	RiverList rivers, dependentRivers, specialRivers;
+	RiverList rivers, dependentRivers;
+	RseNode* specialRse = nullptr;
 
 	bool innerSubStream = false;
 
@@ -853,11 +901,14 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 	{
 		fb_assert(sort == rse->rse_sorted);
 		fb_assert(aggregate == rse->rse_aggregate);
+		fb_assert(!specialRse);
 
-		const auto subRse = nodeAs<RseNode>(node);
-
-		const bool semiJoin = (subRse && subRse->isSemiJoined());
-		fb_assert(!semiJoin || rse->rse_jointype == blr_inner);
+		if (isSpecialJoin() && innerSubStream)
+		{
+			specialRse = nodeAs<RseNode>(node);
+			fb_assert(specialRse);
+			continue;
+		}
 
 		// Find the stream number and place it at the end of the bedStreams array
 		// (if this is really a stream and not another RseNode)
@@ -880,14 +931,14 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 			bool computable = false;
 
 			// AB: Save all outer-part streams
-			if (isInnerJoin() || (isLeftJoin() && !innerSubStream))
+			if (isInnerJoin() || ((isLeftJoin() || isSpecialJoin()) && !innerSubStream))
 			{
 				if (node->computable(csb, INVALID_STREAM, false))
 					computable = true;
 
 				// Apply local booleans, if any. Note that it's done
 				// only for inner joins and outer streams of left joins.
-				auto iter = getConjuncts(!isInnerJoin(), false);
+				auto iter = getConjuncts(isLeftJoin(), false);
 				rsb = applyLocalBoolean(rsb, localStreams, iter);
 			}
 
@@ -897,11 +948,7 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 			if (computable)
 			{
 				outerStreams.join(localStreams);
-
-				if (semiJoin)
-					specialRivers.add(river);
-				else
-					rivers.add(river);
+				rivers.add(river);
 			}
 			else
 			{
@@ -910,7 +957,6 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 		}
 		else
 		{
-			fb_assert(!semiJoin);
 			// We have a relation, just add its stream
 			fb_assert(bedStreams.hasData());
 			outerStreams.add(bedStreams.back());
@@ -936,7 +982,7 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 		river->activate(csb);
 
 	bool sortCanBeUsed = true;
-	SortNode* const orgSortNode = sort;
+	const auto orgSortNode = sort;
 
 	// When DISTINCT and ORDER BY are done on different fields,
 	// and ORDER BY can be mapped to an index, then the records
@@ -951,14 +997,14 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 	}
 
 	// Outer joins are processed their own way
-	if (!isInnerJoin())
+	if (isOuterJoin())
 	{
 		rivers.join(dependentRivers);
 		rsb = generateOuterJoin(rivers, &sort);
 	}
 	else
 	{
-		JoinType joinType = INNER_JOIN;
+		fb_assert(isInnerJoin() || isSpecialJoin());
 
 		// AB: If previous rsb's are already on the stack we can't use
 		// a navigational-retrieval for an ORDER BY because the next
@@ -970,70 +1016,59 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 
 			// AB: We could already have multiple rivers at this
 			// point so try to do some hashing or sort/merging now.
-			while (generateEquiJoin(rivers, joinType))
+			while (generateEquiJoin(rivers, INNER_JOIN))
 				;
 		}
 
-		StreamList joinStreams(compileStreams);
-
-		fb_assert(joinStreams.getCount() != 1 || csb->csb_rpt[joinStreams[0]].csb_relation);
-
-		while (true)
+		if (compileStreams.hasData())
 		{
-			// AB: Determine which streams have an index relationship
-			// with the currently active rivers. This is needed so that
-			// no merge is made between a new cross river and the
-			// currently active rivers. Where in the new cross river
-			// a stream depends (index) on the active rivers.
-			StreamList dependentStreams, freeStreams;
-			findDependentStreams(joinStreams, dependentStreams, freeStreams);
+			StreamList joinStreams(compileStreams);
 
-			// If we have dependent and free streams then we can't rely on
-			// the sort node to be used for index navigation
-			if (dependentStreams.hasData() && freeStreams.hasData())
+			if (isInnerJoin())
 			{
-				sort = nullptr;
-				sortCanBeUsed = false;
-			}
+				fb_assert(joinStreams.getCount() != 1 || csb->csb_rpt[joinStreams[0]].csb_relation);
 
-			if (dependentStreams.hasData())
-			{
-				// Copy free streams
-				joinStreams.assign(freeStreams);
+				// Process streams dependent on the priorly created rivers
 
-				// Make rivers from the dependent streams
-				generateInnerJoin(dependentStreams, rivers, &sort, rse->rse_plan);
-
-				// Generate one river which holds a cross join rsb between
-				// all currently available rivers
-
-				rivers.add(FB_NEW_POOL(getPool()) CrossJoin(this, rivers, joinType));
-				rivers.back()->activate(csb);
-			}
-			else
-			{
-				if (freeStreams.hasData())
+				if (joinDependentStreams(joinStreams, rivers, &sort))
 				{
-					// Deactivate streams from rivers on stack, because
-					// the remaining streams don't have any indexed relationship with them
-					for (const auto river : rivers)
-						river->deactivate(csb);
+					// If we have dependent and free streams then we can't rely on
+					// the sort node to be used for index navigation
+					if (joinStreams.hasData())
+					{
+						sortCanBeUsed = false;
+						sort = nullptr;
+					}
+
+					// Generate one river which holds a cross join rsb between
+					// all currently available rivers. This is needed to exclude
+					// dependent rivers from hashing or sort/merging that happens below.
+
+					rivers.add(FB_NEW_POOL(getPool()) CrossJoin(this, rivers, INNER_JOIN));
+					rivers.back()->activate(csb);
 				}
 
-				break;
-			}
-		}
+				// Now process streams dependent on rivers that are dependent themselves
 
-		// Attempt to form joins in decreasing order of desirability
-		generateInnerJoin(joinStreams, rivers, &sort, rse->rse_plan);
+				for (const auto depRiver : dependentRivers)
+					depRiver->activate(csb);
+
+				joinDependentStreams(joinStreams, dependentRivers, nullptr);
+			}
+
+			// Attempt to form joins in decreasing order of desirability
+			generateInnerJoin(joinStreams, rivers, &sort, rse->rse_plan);
+		}
 
 		if (rivers.isEmpty() && dependentRivers.isEmpty())
 		{
 			// This case may look weird, but it's possible for recursive unions
-			rsb = FB_NEW_POOL(csb->csb_pool) NestedLoopJoin(csb, 0, nullptr, joinType);
+			rsb = FB_NEW_POOL(csb->csb_pool) NestedLoopJoin(csb, 0, nullptr, INNER_JOIN);
 		}
 		else
 		{
+			auto joinType = INNER_JOIN;
+
 			while (rivers.hasData() || dependentRivers.hasData())
 			{
 				// Re-activate remaining rivers to be hashable/mergeable
@@ -1046,7 +1081,8 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 
 				if (dependentRivers.hasData())
 				{
-					fb_assert(joinType == INNER_JOIN);
+					for (const auto depRiver : dependentRivers)
+						depRiver->activate(csb);
 
 					rivers.join(dependentRivers);
 					dependentRivers.clear();
@@ -1055,15 +1091,26 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 				const auto finalRiver = FB_NEW_POOL(getPool()) CrossJoin(this, rivers, joinType);
 				fb_assert(rivers.isEmpty());
 				rsb = finalRiver->getRecordSource();
+				cardinality = rsb->getCardinality();
 
-				if (specialRivers.hasData())
+				if (specialRse)
 				{
 					fb_assert(joinType == INNER_JOIN);
 					joinType = SEMI_JOIN;
 
 					rivers.add(finalRiver);
-					rivers.join(specialRivers);
-					specialRivers.clear();
+
+					const auto sub = specialRse->compile(tdbb, this, true);
+					fb_assert(sub);
+
+					StreamList localStreams;
+					sub->findUsedStreams(localStreams);
+
+					const auto subRiver = FB_NEW_POOL(getPool()) River(csb, sub, specialRse, localStreams);
+					auto& list = subRiver->isDependent(*finalRiver) ? dependentRivers : rivers;
+					list.add(subRiver);
+
+					specialRse = nullptr;
 				}
 			}
 		}
@@ -1159,6 +1206,29 @@ RecordSource* Optimizer::compile(BoolExprNodeStack* parentStack)
 		rsb = FB_NEW_POOL(getPool()) BufferedStream(csb, rsb);
 
 	return rsb;
+}
+
+
+//
+// Calculate selectivity of the dependent booleans
+//
+
+double Optimizer::getDependentSelectivity()
+{
+	StreamStateHolder stateHolder(csb, compileStreams);
+	stateHolder.activate();
+
+	double selectivity = MAXIMUM_SELECTIVITY;
+	for (const auto stream : compileStreams)
+	{
+		Retrieval retrieval(tdbb, this, stream, false, false, nullptr, true);
+		const auto candidate = retrieval.getInversion();
+
+		if (candidate->dependencies)
+			selectivity *= candidate->selectivity;
+	}
+
+	return selectivity;
 }
 
 
@@ -2000,7 +2070,7 @@ void Optimizer::checkSorts()
 
 					// Walk trough the relations of the RSE and see if a
 					// matching stream can be found.
-					if (newRse->rse_jointype == blr_inner)
+					if (newRse->isInnerJoin())
 					{
 						if (newRse->rse_relations.getCount() == 1)
 							node = newRse->rse_relations[0];
@@ -2029,7 +2099,7 @@ void Optimizer::checkSorts()
 							node = nullptr;
 						}
 					}
-					else if (newRse->rse_jointype == blr_left)
+					else if (newRse->isLeftJoin())
 						node = newRse->rse_relations[0];
 					else
 						node = nullptr;
@@ -2290,9 +2360,10 @@ unsigned Optimizer::distributeEqualities(BoolExprNodeStack& orgStack, unsigned b
 // Find the streams that can use an index with the currently active streams
 //
 
-void Optimizer::findDependentStreams(const StreamList& streams,
-									 StreamList& dependent_streams,
-									 StreamList& free_streams)
+void Optimizer::findDependentStreams(const RiverList& rivers,
+									 const StreamList& streams,
+									 StreamList& dependentStreams,
+									 StreamList& freeStreams)
 {
 #ifdef OPT_DEBUG_RETRIEVAL
 	if (streams.hasData())
@@ -2306,7 +2377,7 @@ void Optimizer::findDependentStreams(const StreamList& streams,
 		// Set temporary active flag for this stream
 		tail->activate();
 
-		bool indexed_relationship = false;
+		bool dependent = false;
 
 		if (conjuncts.hasData())
 		{
@@ -2320,18 +2391,87 @@ void Optimizer::findDependentStreams(const StreamList& streams,
 			const auto candidate = retrieval.getInversion();
 
 			if (candidate->dependentFromStreams.hasData())
-				indexed_relationship = true;
+			{
+				dependent = true;
+
+				StreamList checkStreams;
+				checkStreams.add(stream);
+
+				for (const auto river : rivers)
+				{
+					// If some river already depends on this stream,
+					// then itself it cannot be dependent
+					if (river->isDependent(checkStreams))
+					{
+						dependent = false;
+						break;
+					}
+				}
+			}
 		}
 
-		if (indexed_relationship)
-			dependent_streams.add(stream);
+		if (dependent)
+			dependentStreams.add(stream);
 		else
-			free_streams.add(stream);
+			freeStreams.add(stream);
 
 		// Reset active flag
 		tail->deactivate();
 	}
 }
+
+//
+// Find streams dependent on the priorly created rivers and make a join from them
+//
+
+bool Optimizer::joinDependentStreams(StreamList& joinStreams, RiverList& rivers, SortNode** sort)
+{
+	bool hasDependentStreams = false;
+
+	while (true)
+	{
+		// AB: Determine which streams have an index relationship
+		// with the currently active rivers. This is needed so that
+		// no merge is made between a new cross river and the
+		// currently active rivers. Where in the new cross river
+		// a stream depends (index) on the active rivers.
+		StreamList dependentStreams, freeStreams;
+		findDependentStreams(rivers, joinStreams, dependentStreams, freeStreams);
+
+		// If we have dependent and free streams then we can't rely on
+		// the sort node to be used for index navigation
+		if (dependentStreams.hasData() && freeStreams.hasData())
+			sort = nullptr;
+
+		if (dependentStreams.hasData())
+		{
+			hasDependentStreams = true;
+
+			// Copy free streams
+			joinStreams.assign(freeStreams);
+
+			// Make rivers from the dependent streams
+			generateInnerJoin(dependentStreams, rivers, sort, rse->rse_plan);
+
+			for (const auto depStream : dependentStreams)
+				csb->csb_rpt[depStream].activate();
+		}
+		else
+		{
+			if (freeStreams.hasData())
+			{
+				// Deactivate streams from rivers on stack, because
+				// the remaining streams don't have any indexed relationship with them
+				for (const auto river : rivers)
+					river->deactivate(csb);
+			}
+
+			break;
+		}
+	}
+
+	return hasDependentStreams;
+};
 
 
 //
@@ -2667,7 +2807,7 @@ bool Optimizer::generateEquiJoin(RiverList& rivers, JoinType joinType)
 //	then form streams into rivers (combinations of streams)
 //
 
-void Optimizer::generateInnerJoin(StreamList& streams,
+void Optimizer::generateInnerJoin(const StreamList& streams,
 								  RiverList& rivers,
 								  SortNode** sortClause,
 								  const PlanNode* planClause)
@@ -2689,16 +2829,6 @@ void Optimizer::generateInnerJoin(StreamList& streams,
 	{
 		const auto river = innerJoin.formRiver();
 		rivers.add(river);
-
-		// Remove already consumed streams from the source stream list
-		for (const auto stream : river->getStreams())
-		{
-			FB_SIZE_T pos;
-			if (streams.find(stream, pos))
-				streams.remove(pos);
-			else
-				fb_assert(false);
-		}
 	}
 }
 
@@ -2724,7 +2854,7 @@ RecordSource* Optimizer::generateOuterJoin(RiverList& rivers,
 	// the sense of inner and outer, though for a full join it doesn't
 	// matter and we should probably try both orders to see which is
 	// more efficient.
-	if (rse->rse_jointype != blr_left)
+	if (!rse->isLeftJoin())
 	{
 		stream_ptr[1] = &stream_o;
 		stream_ptr[0] = &stream_i;
@@ -2763,6 +2893,29 @@ RecordSource* Optimizer::generateOuterJoin(RiverList& rivers,
 		{
 			stream_o.stream_rsb =
 				generateRetrieval(stream_o.stream_num, sortClause, true, false, &boolean);
+		}
+		else
+		{
+			// Ensure the inner streams are inactive
+			StreamList streams;
+
+			if (stream_i.stream_rsb)
+				stream_i.stream_rsb->findUsedStreams(streams);
+
+			StreamStateHolder stateHolder(csb, streams);
+			stateHolder.deactivate();
+
+			// Collect booleans computable for the outer sub-stream, it must be active now
+			for (auto iter = getBaseConjuncts(); iter.hasData(); ++iter)
+			{
+				if (!(iter & CONJUNCT_USED) &&
+					!(iter->nodFlags & ExprNode::FLAG_RESIDUAL) &&
+					iter->computable(csb, INVALID_STREAM, false))
+				{
+					compose(getPool(), &boolean, iter);
+					iter |= CONJUNCT_USED;
+				}
+			}
 		}
 
 		if (!stream_i.stream_rsb)
@@ -3488,7 +3641,7 @@ ValueExprNode* Optimizer::optimizeLikeSimilar(ComparativeBoolNode* cmpNode)
 					specialCharFound = true;
 				}
 
-				break;
+				continue;
 			}
 
 			if (!specialCharFound)

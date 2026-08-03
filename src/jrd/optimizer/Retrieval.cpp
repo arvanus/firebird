@@ -356,6 +356,8 @@ InversionCandidate* Retrieval::getInversion()
 			&invCandidate->dependentFromStreams);
 	}
 
+	invCandidate->dependencies = invCandidate->dependentFromStreams.getCount();
+
 #ifdef OPT_DEBUG_RETRIEVAL
 	// Debug
 	printFinalCandidate(invCandidate);
@@ -1496,6 +1498,7 @@ InversionCandidate* Retrieval::makeInversion(InversionCandidateList& inversions)
 
 					if (bestCandidate->condition)
 					{
+						bestCandidate->used = true;
 						bestCandidate = currentInv;
 						restartLoop = true;
 						break;

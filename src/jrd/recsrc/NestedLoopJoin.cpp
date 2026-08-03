@@ -247,8 +247,11 @@ bool NestedLoopJoin::refetchRecord(thread_db* /*tdbb*/) const
 	return true;
 }
 
-WriteLockResult NestedLoopJoin::lockRecord(thread_db* /*tdbb*/) const
+WriteLockResult NestedLoopJoin::lockRecord(thread_db* tdbb) const
 {
+	if (m_joinType == SEMI_JOIN || m_joinType == ANTI_JOIN)
+		return m_args.front()->lockRecord(tdbb);
+
 	status_exception::raise(Arg::Gds(isc_record_lock_not_supp));
 }
 
@@ -322,6 +325,17 @@ void NestedLoopJoin::findUsedStreams(StreamList& streams, bool expandAll) const
 {
 	for (const auto arg : m_args)
 		arg->findUsedStreams(streams, expandAll);
+}
+
+bool NestedLoopJoin::isDependent(const StreamList& streams) const
+{
+	for (const auto arg : m_args)
+	{
+		if (arg->isDependent(streams))
+			return true;
+	}
+
+	return (m_boolean && m_boolean->containsAnyStream(streams));
 }
 
 void NestedLoopJoin::invalidateRecords(Request* request) const

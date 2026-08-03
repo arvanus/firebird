@@ -64,6 +64,8 @@ public:
 	BigInteger& operator%= (const BigInteger& val);
 
 	bool operator== (const BigInteger& val) const;
+	bool operator< (int val) const;
+	bool operator> (int val) const;
 
 	void getBytes(Firebird::UCharBuffer& bytes) const;
 	unsigned int length() const;

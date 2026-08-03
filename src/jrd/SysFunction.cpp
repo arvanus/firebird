@@ -235,6 +235,7 @@ void setParamsDateDiff(DataTypeUtilBase* dataTypeUtil, const SysFunction* functi
 void setParamsEncrypt(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args);
 void setParamsFirstLastDay(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
 void setParamsGetSetContext(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
+void setParamsResetContext(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
 void setParamsHash(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args);
 void setParamsMakeDbkey(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
 void setParamsOverlay(DataTypeUtilBase* dataTypeUtil, const SysFunction* function, int argsCount, dsc** args);
@@ -327,6 +328,7 @@ dsc* evlFloor(thread_db* tdbb, const SysFunction* function, const NestValueArray
 dsc* evlGenUuid(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlGetContext(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlSetContext(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
+dsc* evlResetContext(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlGetTranCN(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlHash(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
 dsc* evlLeft(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure);
@@ -358,7 +360,8 @@ dsc* evlUuidToChar(thread_db* tdbb, const SysFunction* function, const NestValue
 // System context function names
 const char
 	RDB_GET_CONTEXT[] = "RDB$GET_CONTEXT",
-	RDB_SET_CONTEXT[] = "RDB$SET_CONTEXT";
+	RDB_SET_CONTEXT[] = "RDB$SET_CONTEXT",
+	RDB_RESET_CONTEXT[] = "RDB$RESET_CONTEXT";
 
 // Context namespace names
 const char
@@ -607,24 +610,27 @@ void setParamsInt64(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** 
 
 void setParamsSecondInteger(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 2)
-	{
-		if (args[1]->isUnknown())
-			args[1]->makeLong(0);
-	}
+	fb_assert(argsCount >= 2);
+
+	if (args[1]->isUnknown())
+		args[1]->makeLong(0);
 }
 
 
 void setParamsAsciiVal(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 1 && args[0]->isUnknown())
+	fb_assert(argsCount >= 1);
+
+	if (args[0]->isUnknown())
 		args[0]->makeText(1, CS_ASCII);
 }
 
 
 void setParamsBlobAppend(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 1 && args[0]->isUnknown())
+	fb_assert(argsCount >= 1);
+
+	if (args[0]->isUnknown())
 		args[0]->makeBlob(isc_blob_text, CS_dynamic);
 
 	for (int i = 1; i < argsCount; ++i)
@@ -637,14 +643,18 @@ void setParamsBlobAppend(DataTypeUtilBase*, const SysFunction*, int argsCount, d
 
 void setParamsCharToUuid(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 1 && args[0]->isUnknown())
+	fb_assert(argsCount >= 1);
+
+	if (args[0]->isUnknown())
 		args[0]->makeText(GUID_BODY_SIZE, ttype_ascii);
 }
 
 
 void setParamsDateAdd(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 1 && args[0]->isUnknown())
+	fb_assert(argsCount >= 3);
+
+	if (args[0]->isUnknown())
 	{
 		if (args[1]->dsc_address &&	// constant
 			CVT_get_long(args[1], 0, JRD_get_thread_data()->getAttachment()->att_dec_status, ERR_post) == blr_extract_millisecond)
@@ -655,31 +665,32 @@ void setParamsDateAdd(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc*
 			args[0]->makeInt64(0);
 	}
 
-	if (argsCount >= 3 && args[2]->isUnknown())
+	if (args[2]->isUnknown())
 		args[2]->makeTimestamp();
 }
 
 
 void setParamsDateDiff(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 3)
+	fb_assert(argsCount >= 3);
+
+	if (args[1]->isUnknown() && args[2]->isUnknown())
 	{
-		if (args[1]->isUnknown() && args[2]->isUnknown())
-		{
-			args[1]->makeTimestamp();
-			args[2]->makeTimestamp();
-		}
-		else if (args[1]->isUnknown())
-			*args[1] = *args[2];
-		else if (args[2]->isUnknown())
-			*args[2] = *args[1];
+		args[1]->makeTimestamp();
+		args[2]->makeTimestamp();
 	}
+	else if (args[1]->isUnknown())
+		*args[1] = *args[2];
+	else if (args[2]->isUnknown())
+		*args[2] = *args[1];
 }
 
 
 void setParamsUnicodeVal(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 1 && args[0]->isUnknown())
+	fb_assert(argsCount >= 1);
+
+	if (args[0]->isUnknown())
 		args[0]->makeText(4, CS_UTF8);
 }
 
@@ -815,23 +826,24 @@ void setParamsRsaPublic(DataTypeUtilBase*, const SysFunction*, int argsCount, ds
 
 void setParamsFirstLastDay(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 2)
-	{
-		if (args[1]->isUnknown())
-			args[1]->makeTimestamp();
-	}
+	fb_assert(argsCount >= 2);
+
+	if (args[1]->isUnknown())
+		args[1]->makeTimestamp();
 }
 
 
 void setParamsGetSetContext(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 1 && args[0]->isUnknown())
+	fb_assert(argsCount >= 2);
+
+	if (args[0]->isUnknown())
 	{
 		args[0]->makeVarying(80, ttype_none);
 		args[0]->setNullable(true);
 	}
 
-	if (argsCount >= 2 && args[1]->isUnknown())
+	if (args[1]->isUnknown())
 	{
 		args[1]->makeVarying(80, ttype_none);
 		args[1]->setNullable(true);
@@ -841,6 +853,18 @@ void setParamsGetSetContext(DataTypeUtilBase*, const SysFunction*, int argsCount
 	{
 		args[2]->makeVarying(MAX_CTX_VAR_SIZE, ttype_none);
 		args[2]->setNullable(true);
+	}
+}
+
+
+void setParamsResetContext(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
+{
+	fb_assert(argsCount == 1);
+
+	if (args[0]->isUnknown())
+	{
+		args[0]->makeVarying(80, ttype_none);
+		args[0]->setNullable(true);
 	}
 }
 
@@ -857,86 +881,84 @@ void setParamsMakeDbkey(DataTypeUtilBase*, const SysFunction*, int argsCount, ds
 {
 	// MAKE_DBKEY ( REL_NAME | REL_ID, RECNUM [, DPNUM [, PPNUM] ] )
 
-	if (argsCount > 1)
-	{
-		if (args[0]->isUnknown())
-			args[0]->makeLong(0);
+	fb_assert(argsCount >= 2);
 
-		if (args[1]->isUnknown())
-			args[1]->makeInt64(0);
-	}
+	if (args[0]->isUnknown())
+		args[0]->makeLong(0);
 
-	if (argsCount > 2 && args[2]->isUnknown())
+	if (args[1]->isUnknown())
+		args[1]->makeInt64(0);
+
+	if (argsCount >= 3 && args[2]->isUnknown())
 		args[2]->makeInt64(0);
 
-	if (argsCount > 3 && args[3]->isUnknown())
+	if (argsCount >= 4 && args[3]->isUnknown())
 		args[3]->makeInt64(0);
 }
 
 
 void setParamsOverlay(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 3)
+	fb_assert(argsCount >= 3);
+
+	if (!(args[0]->isUnknown() && args[1]->isUnknown()))
 	{
-		if (!(args[0]->isUnknown() && args[1]->isUnknown()))
-		{
-			if (args[1]->isUnknown())
-				*args[1] = *args[0];
-			else if (args[0]->isUnknown())
-				*args[0] = *args[1];
-		}
-
-		if (argsCount >= 4)
-		{
-			if (args[2]->isUnknown() && args[3]->isUnknown())
-			{
-				args[2]->makeLong(0);
-				args[3]->makeLong(0);
-			}
-			else if (args[2]->isUnknown())
-				*args[2] = *args[3];
-			else if (args[3]->isUnknown())
-				*args[3] = *args[2];
-		}
-
-		if (args[2]->isUnknown())
-			args[2]->makeLong(0);
+		if (args[1]->isUnknown())
+			*args[1] = *args[0];
+		else if (args[0]->isUnknown())
+			*args[0] = *args[1];
 	}
+
+	if (argsCount >= 4)
+	{
+		if (args[2]->isUnknown() && args[3]->isUnknown())
+		{
+			args[2]->makeLong(0);
+			args[3]->makeLong(0);
+		}
+		else if (args[2]->isUnknown())
+			*args[2] = *args[3];
+		else if (args[3]->isUnknown())
+			*args[3] = *args[2];
+	}
+
+	if (args[2]->isUnknown())
+		args[2]->makeLong(0);
 }
 
 
 void setParamsPosition(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 2)
-	{
-		if (args[0]->isUnknown())
-			*args[0] = *args[1];
+	fb_assert(argsCount >= 2);
 
-		if (args[1]->isUnknown())
-			*args[1] = *args[0];
-	}
+	if (args[0]->isUnknown())
+		*args[0] = *args[1];
+
+	if (args[1]->isUnknown())
+		*args[1] = *args[0];
 }
 
 
 void setParamsRoundTrunc(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 1)
-	{
-		if (args[0]->isUnknown())
-			args[0]->makeDouble();
+	fb_assert(argsCount >= 1);
 
-		if (argsCount >= 2)
-		{
-			if (args[1]->isUnknown())
-				args[1]->makeLong(0);
-		}
+	if (args[0]->isUnknown())
+		args[0]->makeDouble();
+
+	if (argsCount >= 2)
+	{
+		if (args[1]->isUnknown())
+			args[1]->makeLong(0);
 	}
 }
 
 
 void setParamsUuidToChar(DataTypeUtilBase*, const SysFunction*, int argsCount, dsc** args)
 {
-	if (argsCount >= 1 && args[0]->isUnknown())
+	fb_assert(argsCount >= 1);
+
+	if (args[0]->isUnknown())
 		args[0]->makeText(16, ttype_binary);
 }
 
@@ -1300,23 +1322,20 @@ void makeBlobAppend(DataTypeUtilBase* dataTypeUtil, const SysFunction* function,
 	result->makeBlob(isc_blob_untyped, ttype_binary);
 	result->setNullable(true);
 
-	if (argsCount > 0)
+	for (int i = 0; i < argsCount; ++i)
 	{
-		for (int i = 0; i < argsCount; ++i)
-		{
-			if (makeBlobAppendBlob(result, args[i]))
-				break;
-		}
+		if (makeBlobAppendBlob(result, args[i]))
+			break;
+	}
 
-		result->setNullable(true);
+	result->setNullable(true);
 
-		for (int i = 0; i < argsCount; ++i)
+	for (int i = 0; i < argsCount; ++i)
+	{
+		if (!args[i]->isNullable())
 		{
-			if (!args[i]->isNullable())
-			{
-				result->setNullable(false);
-				break;
-			}
+			result->setNullable(false);
+			break;
 		}
 	}
 }
@@ -1413,13 +1432,12 @@ void makeFirstLastDayResult(DataTypeUtilBase*, const SysFunction*, dsc* result,
 
 	result->makeDate();
 
-	if (argsCount >= 2)
-	{
-		if (args[1]->dsc_dtype == dtype_timestamp)
-			result->makeTimestamp();
-		else if (args[1]->dsc_dtype == dtype_timestamp_tz)
-			result->makeTimestampTz();
-	}
+	fb_assert(argsCount >= 2);
+
+	if (args[1]->dsc_dtype == dtype_timestamp)
+		result->makeTimestamp();
+	else if (args[1]->dsc_dtype == dtype_timestamp_tz)
+		result->makeTimestampTz();
 
 	result->setNullable(isNullable);
 }
@@ -4961,6 +4979,58 @@ dsc* evlSetContext(thread_db* tdbb, const SysFunction*, const NestValueArray& ar
 }
 
 
+dsc* evlResetContext(thread_db* tdbb, const SysFunction* function, const NestValueArray& args, impure_value* impure)
+{
+	fb_assert(args.getCount() == 1);
+
+	Attachment* const attachment = tdbb->getAttachment();
+	jrd_tra* const transaction = tdbb->getTransaction();
+	Request* request = tdbb->getRequest();
+
+	const dsc* nameSpace = EVL_expr(tdbb, request, args[0]);
+	if (!nameSpace)	// Complain if namespace is null
+		ERR_post(Arg::Gds(isc_ctx_bad_argument) << Arg::Str(RDB_RESET_CONTEXT));
+
+	const string nameSpaceStr(MOV_make_string2(tdbb, nameSpace, ttype_none));
+
+	StringMap* contextVars = nullptr;
+
+	if (nameSpaceStr == USER_SESSION_NAMESPACE)
+	{
+		if (!attachment)
+		{
+			fb_assert(false);
+			return nullptr;
+		}
+
+		contextVars = &attachment->att_context_vars;
+	}
+	else if (nameSpaceStr == USER_TRANSACTION_NAMESPACE)
+	{
+		if (!transaction)
+		{
+			fb_assert(false);
+			return nullptr;
+		}
+
+		contextVars = &transaction->tra_context_vars;
+	}
+	else
+	{
+		// "Invalid namespace name %s passed to %s"
+		ERR_post(Arg::Gds(isc_ctx_namespace_invalid) <<
+			Arg::Str(nameSpaceStr) << Arg::Str(RDB_RESET_CONTEXT));
+	}
+
+	impure->vlu_desc.makeLong(0, &impure->vlu_misc.vlu_long);
+	impure->vlu_misc.vlu_long = (SLONG) contextVars->count();
+
+	contextVars->clear();
+
+	return &impure->vlu_desc;
+}
+
+
 dsc* evlGetTranCN(thread_db* tdbb, const SysFunction* function, const NestValueArray& args,
 	impure_value* impure)
 {
@@ -5561,12 +5631,14 @@ dsc* evlMod(thread_db* tdbb, const SysFunction*, const NestValueArray& args,
 		return &impure->vlu_desc;
 	}
 
+	const SINT64 dividend = MOV_get_int64(tdbb, value1, 0);
 	const SINT64 divisor = MOV_get_int64(tdbb, value2, 0);
 
 	if (divisor == 0)
 		status_exception::raise(Arg::Gds(isc_arith_except) << Arg::Gds(isc_exception_integer_divide_by_zero));
 
-	const SINT64 result = MOV_get_int64(tdbb, value1, 0) % divisor;
+	// Condition covers MIN % -1 UB case
+	const SINT64 result = (divisor == -1) ? 0 : dividend % divisor;
 
 	switch (impure->vlu_desc.dsc_dtype)
 	{
@@ -5847,7 +5919,7 @@ dsc* evlPad(thread_db* tdbb, const SysFunction* function, const NestValueArray& 
 	}
 	else
 	{
-		if (padLen * cs->maxBytesPerChar() > MAX_STR_SIZE)
+		if (padLen > MAX_STR_SIZE / cs->maxBytesPerChar())
 			status_exception::raise(Arg::Gds(isc_arith_except) << Arg::Gds(isc_imp_exc));
 
 		dsc desc;
@@ -6281,6 +6353,10 @@ dsc* evlReplace(thread_db* tdbb, const SysFunction*, const NestValueArray& args,
 
 				if (!finished)
 				{
+					const ULONG available = static_cast<ULONG>(
+						(impure->vlu_desc.dsc_address + impure->vlu_desc.dsc_length) - dstPos);
+					if (lengths[2] > available)
+						status_exception::raise(Arg::Gds(isc_arith_except) << Arg::Gds(isc_imp_exc));
 					memcpy(dstPos, addresses[2], lengths[2]);
 					dstPos += lengths[2];
 				}
@@ -6958,6 +7034,7 @@ const SysFunction SysFunction::functions[] =
 		{RDB_GET_CONTEXT, 2, 2, true, setParamsGetSetContext, makeGetSetContext, evlGetContext, NULL},
 		{"RDB$GET_TRANSACTION_CN", 1, 1, false, setParamsInt64, makeGetTranCN, evlGetTranCN, NULL},
 		{"RDB$ROLE_IN_USE", 1, 1, true, setParamsAsciiVal, makeBooleanResult, evlRoleInUse, NULL},
+		{RDB_RESET_CONTEXT, 1, 1, false, setParamsResetContext, makeLongResult, evlResetContext, NULL},
 		{RDB_SET_CONTEXT, 3, 3, false, setParamsGetSetContext, makeGetSetContext, evlSetContext, NULL},
 		{"RDB$SYSTEM_PRIVILEGE", 1, 1, true, NULL, makeBooleanResult, evlSystemPrivilege, NULL},
 		{"REPLACE", 3, 3, true, setParamsFromList, makeReplace, evlReplace, NULL},
