@@ -214,11 +214,16 @@ normalização invalida todo índice já construído sobre uma coluna
 `LTRIM_ZERO`**, e o motor não valida índice contra versão de collation: o
 sintoma é linha não encontrada, sem erro nenhum.
 
-Ao substituir `fbintl.dll` / `libfbintl.so` numa base que já tem esses índices:
+Ao substituir `fbintl.dll` / `libfbintl.so` numa base que já tem esses índices,
+o caminho é `gbak` backup/restore: o restore reconstrói toda chave chamando o
+driver novo, sem exceção por tipo de índice.
 
-- `gbak` backup/restore, **ou**
-- `ALTER INDEX ... INACTIVE` seguido de `ALTER INDEX ... ACTIVE` em todos os
-  índices envolvidos (inclusive os implícitos de `PRIMARY KEY` / `UNIQUE`).
+Reconstruir índice a índice não resolve. `ALTER INDEX ... INACTIVE` é recusado
+para índice de constraint (`Cannot deactivate index used by a PRIMARY/UNIQUE
+constraint`, gatilho de sistema registrado em `src/jrd/ini.epp:188-190`), e é
+justamente o índice implícito de `PRIMARY KEY` e `UNIQUE` que não pode ficar
+no formato antigo: chave velha com driver novo não devolve linha e não dá
+erro.
 
 Ver `doc/README.ltrim_zero_rollout.md` para quem já tem índice construído no
 formato de chave antigo (sem o prefixo de tamanho) e precisa do inventário e

@@ -1602,7 +1602,7 @@ Esta task não é TDD: o deliverable é um documento operacional mais o script S
 - Consumes: o fato de que `RDB$COLLATIONS.RDB$BASE_COLLATION_NAME` guarda o nome do `FROM EXTERNAL` (`src/dsql/DdlNodes.epp:3977`); a chave nova de `len + 2` bytes por segmento; o binário guardado na Task 5.
 - Produces: `doc/README.ltrim_zero_rollout.md`, referenciado pelo `doc/README.ltrim_zero.md` da Task 4.
 
-- [ ] **Step 1: Escrever o inventário**
+- [x] **Step 1: Escrever o inventário**
 
 Criar `doc/ltrim_zero_rollout_inventory.sql`. O ponto crítico: **nada aqui procura pelo nome local da collation.** `CREATE COLLATION ... FROM EXTERNAL` deixa o DBA escolher qualquer nome local, e o próprio harness de teste deste repositório faz `CREATE COLLATION LTZ FOR WIN1252 FROM EXTERNAL ('WIN1252_LTRIM_ZERO')`. Um inventário que procurasse por `ISO8859_1_LTRIM_ZERO` em `RDB$COLLATION_NAME` perderia esse banco em silêncio, e índice perdido depois da troca é índice que devolve resultado errado.
 
@@ -1750,7 +1750,7 @@ WHERE EXTRA_BYTES > 0
 ORDER BY 6 DESC;
 ```
 
-- [ ] **Step 2: Rodar o inventário contra o banco do cliente e conferir os números**
+- [x] **Step 2: Rodar o inventário contra o banco do cliente e conferir os números**
 
 ```
 "C:\Program Files\Firebird\Firebird_5_0\isql.exe" -u SYSDBA -p masterkey ^
@@ -1768,7 +1768,7 @@ Conferências esperadas, contra os números já levantados:
 
 Divergência em qualquer um desses cinco números é motivo para parar e entender antes de escrever o runbook. Repetir o inventário em cada outro banco do servidor.
 
-- [ ] **Step 3: Escrever o runbook**
+- [x] **Step 3: Escrever o runbook**
 
 Criar `doc/README.ltrim_zero_rollout.md` cobrindo, na ordem:
 
@@ -1787,7 +1787,7 @@ Criar `doc/README.ltrim_zero_rollout.md` cobrindo, na ordem:
 8. **Efeitos permanentes a comunicar ao cliente**: `STARTING WITH` e `LIKE 'x%'` sobre coluna do domínio passam a varrer o índice inteiro (resultado certo, plano pior, e o otimizador ainda acha a faixa seletiva por `REDUCE_SELECTIVITY_FACTOR_STARTING` em `Retrieval.cpp:990`); `BETWEEN` muda de significado além do caso CNPJ, e onde a coluna mistura número e texto vale revisar as faixas; relatórios que dependiam da ordem alfabética mudam.
 9. **Outros bancos do servidor**: o dll é compartilhado. Rodar o inventário em cada banco e incluir no mesmo agendamento todo banco que a query 1 não devolver vazio.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add doc/ltrim_zero_rollout_inventory.sql doc/README.ltrim_zero_rollout.md
