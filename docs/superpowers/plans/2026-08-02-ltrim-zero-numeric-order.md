@@ -79,7 +79,7 @@ Esta task vem primeiro **de propósito**. Gerando e validando o dll com o driver
 - Consumes: `src/intl/lc_ltrim_zero.cpp` (entry point `LCLTRIMZERO_init`, assinatura do `TEXTTYPE_ENTRY3`), `src/intl/ld_proto.h` (protótipos `extern "C"` de `LD_version` e `LD_lookup_texttype_with_status`).
 - Produces: `fbltrimzero.dll` x64 e o script `builds/win32/make_ltrimzero.bat`. A Task 5 roda o mesmo script sem alteração.
 
-- [ ] **Step 1: Copiar a camada de exportação para dentro do repositório**
+- [x] **Step 1: Copiar a camada de exportação para dentro do repositório**
 
 Criar `src/intl/ltrimzero/ld_min.cpp` com exatamente este conteúdo (é o arquivo de `D:\GitHub\ltrim-zero-module\ld_min.cpp`, sem mudança de código, só trazido para o repositório para que driver e camada de exportação nunca divirjam):
 
@@ -208,7 +208,7 @@ FB_DLL_EXPORT INTL_BOOL LD_lookup_texttype_with_status(
 }
 ```
 
-- [ ] **Step 2: Copiar o arquivo de configuração**
+- [x] **Step 2: Copiar o arquivo de configuração**
 
 Criar `src/intl/ltrimzero/fbltrimzero.conf` com o conteúdo de `D:\GitHub\ltrim-zero-module\fbltrimzero.conf`, sem alteração:
 
@@ -251,7 +251,7 @@ charset = ISO8859_1 {
 }
 ```
 
-- [ ] **Step 3: Escrever a receita MSVC**
+- [x] **Step 3: Escrever a receita MSVC**
 
 Criar `builds/win32/make_ltrimzero.bat`:
 
@@ -315,7 +315,7 @@ dumpbin /nologo /dependents "%LTZ_OUT%\fbltrimzero.dll"
 
 `FB_ROOT_PATH` é definida por `setenvvar.bat`. Os nomes exportados saem sem decoração porque `ld_proto.h` embrulha os protótipos em `extern "C"` e `FB_DLL_EXPORT` é `__declspec(dllexport)` no Windows (`src/include/firebird/ibase.h:67-68`); não é preciso arquivo `.def`.
 
-- [ ] **Step 4: Compilar e conferir os exports**
+- [x] **Step 4: Compilar e conferir os exports**
 
 Rodar:
 
@@ -331,7 +331,7 @@ Esperado:
 
 Se o compilador reclamar de `autoconfig.h` faltando, conferir que `/I src\include\gen` está na linha: no Windows o arquivo usado é `src\include\gen\autoconfig_msvc.h`, que já está versionado, e não é preciso rodar `configure`.
 
-- [ ] **Step 5: Capturar a linha de base com o dll que já está em produção**
+- [x] **Step 5: Capturar a linha de base com o dll que já está em produção**
 
 Antes de trocar qualquer coisa, rodar a suíte SQL contra o `fbltrimzero.dll` **atualmente instalado**:
 
@@ -342,7 +342,7 @@ Antes de trocar qualquer coisa, rodar a suíte SQL contra o `fbltrimzero.dll` **
 
 Isso existe porque o dll instalado foi gerado há tempos, a partir de uma versão antiga do fonte, sem receita guardada. Sem essa captura, uma diferença no passo 7 seria diagnosticada como receita quebrada quando na verdade é o fonte que andou.
 
-- [ ] **Step 6: Instalar na instalação estoque**
+- [x] **Step 6: Instalar na instalação estoque**
 
 Ainda com o driver **inalterado**, para provar a receita e não o código novo.
 
@@ -363,7 +363,7 @@ Start-Service FirebirdServerDefaultInstance
 
 O `fbintl.conf` instalado já traz `#include $(root)/intl/fbltrimzero.conf`, então o `.conf` não precisa ser recopiado. Conferir com `Select-String -Path "$intl\fbintl.conf" -Pattern fbltrimzero`.
 
-- [ ] **Step 7: Rodar a suíte SQL contra o dll recém-gerado e comparar**
+- [x] **Step 7: Rodar a suíte SQL contra o dll recém-gerado e comparar**
 
 ```
 "C:\Program Files\Firebird\Firebird_5_0\isql.exe" -u SYSDBA -p masterkey ^
@@ -382,7 +382,7 @@ Como ler o resultado, nessa ordem:
 
 O teste `9.1 KNOWN LIMIT: ordering is lexicographic, not numeric` ainda tem que sair com `10,100,9,a,B` nos dois relatórios: o comportamento de ordenação só muda na Task 2.
 
-- [ ] **Step 8: Documentar a receita**
+- [x] **Step 8: Documentar a receita**
 
 Criar `doc/README.fbltrimzero_build.md` cobrindo, em prosa curta:
 - o que é o módulo e por que ele existe separado do `fbintl` (a produção roda engine estoque; trocar o `fbintl.dll` registraria a collation duas vezes);
@@ -392,7 +392,7 @@ Criar `doc/README.fbltrimzero_build.md` cobrindo, em prosa curta:
 - a receita Linux equivalente, transcrevendo o `Makefile` de `D:\GitHub\ltrim-zero-module` com `FB_SRC` apontando para a árvore configurada, e os checks `nm -D`, `ldd`, `objdump -T`;
 - instalação: copiar `fbltrimzero.dll` e `fbltrimzero.conf` para o diretório `intl` do destino, **sem editar** `fbintl.conf`, e reiniciar o serviço.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/intl/ltrimzero builds/win32/make_ltrimzero.bat doc/README.fbltrimzero_build.md
@@ -413,7 +413,7 @@ git commit -m "build(intl): MSVC recipe for the standalone fbltrimzero module"
 - Consumes: `LCLTRIMZERO_init(texttype* cache, charset* cs, const ASCII* tt_name, const ASCII* cs_name, USHORT attributes, const UCHAR* specific_attributes, ULONG specific_attributes_length, const ASCII* config_info)` retornando `INTL_BOOL`; ponteiros `texttype::texttype_fn_compare`, `texttype::texttype_fn_string_to_key`, `texttype::texttype_fn_key_length`; constantes `INTL_KEY_SORT` (0), `INTL_KEY_PARTIAL` (1), `INTL_KEY_UNIQUE` (2) de `src/common/intlobj_new.h:60-62`; `TEXTTYPE_ATTR_PAD_SPACE` (1), `TEXTTYPE_ATTR_CASE_INSENSITIVE` (2).
 - Produces: o formato de chave `[2 bytes big-endian][normalizado]`, `key_length(len) == len + 2` e `string_to_key(..., INTL_KEY_PARTIAL) == 0`. A Task 3 e o runbook da Task 6 dependem desses três fatos.
 
-- [ ] **Step 1: Escrever o teste que falha**
+- [x] **Step 1: Escrever o teste que falha**
 
 Criar `src/jrd/tests/LtrimZeroKeyTest.cpp`:
 
@@ -849,7 +849,7 @@ BOOST_AUTO_TEST_SUITE_END()	// LtrimZeroKeySuite
 BOOST_AUTO_TEST_SUITE_END()	// IntlSuite
 ```
 
-- [ ] **Step 2: Registrar o teste no projeto MSVC**
+- [x] **Step 2: Registrar o teste no projeto MSVC**
 
 Em `builds/win32/msvc15/engine_test.vcxproj`, no `ItemGroup` de `ClCompile` (hoje linhas 183-192), acrescentar depois da linha do `LtrimZeroCollationTest.cpp`:
 
@@ -861,7 +861,7 @@ Em `builds/win32/msvc15/engine_test.vcxproj.filters`, acrescentar a entrada corr
 
 No POSIX não é preciso mexer em nada: `Engine_Test_Objects:= $(call dirObjects,jrd/tests)` (`builds/posix/make.shared.variables:93`) varre o diretório.
 
-- [ ] **Step 3: Compilar e rodar o teste, esperando falha**
+- [x] **Step 3: Compilar e rodar o teste, esperando falha**
 
 ```
 $env:VS170COMNTOOLS='C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\'
@@ -879,7 +879,7 @@ Esperado: **FAIL**. Com o driver atual:
 
 `KeyOrderReproducesCompare` **passa** antes da mudança, porque a invariante chave x `compare` já vale hoje. Isso é esperado: esse caso é a rede de segurança da refatoração, não a especificação da mudança. Se ele falhar depois do passo 8, chave e comparação divergiram.
 
-- [ ] **Step 4: Implementar a comparação por tamanho**
+- [x] **Step 4: Implementar a comparação por tamanho**
 
 Em `src/intl/lc_ltrim_zero.cpp`, substituir o corpo de `texttype_fn_compare` a partir do laço (linhas 124-141) por:
 
@@ -907,7 +907,7 @@ Em `src/intl/lc_ltrim_zero.cpp`, substituir o corpo de `texttype_fn_compare` a p
 	return 0;
 ```
 
-- [ ] **Step 5: Implementar a chave prefixada pelo tamanho**
+- [x] **Step 5: Implementar a chave prefixada pelo tamanho**
 
 Substituir `texttype_fn_str_to_key` (linhas 145-184) inteiro por:
 
@@ -981,7 +981,7 @@ static USHORT texttype_fn_str_to_key(texttype* obj,
 }
 ```
 
-- [ ] **Step 6: Ajustar o comprimento declarado da chave**
+- [x] **Step 6: Ajustar o comprimento declarado da chave**
 
 Substituir `texttype_fn_key_length` (linhas 187-191) por:
 
@@ -996,7 +996,7 @@ static USHORT texttype_fn_key_length(texttype* /*obj*/, USHORT len)
 }
 ```
 
-- [ ] **Step 7: Reescrever o cabeçalho de comentário do arquivo**
+- [x] **Step 7: Reescrever o cabeçalho de comentário do arquivo**
 
 O bloco atual (linhas 36-57) afirma duas coisas que passam a ser falsas: "The sort key IS the normalized string" e "INTL_KEY_PARTIAL needs no special case either". Substituir os dois primeiros bullets de "Implementation notes" por:
 
@@ -1025,7 +1025,7 @@ O bloco atual (linhas 36-57) afirma duas coisas que passam a ser falsas: "The so
 
 E, no bullet sobre pattern matching (linhas 51-57), trocar a frase final "As a consequence STARTING WITH may return different rows depending on whether an index is used" por: "STARTING WITH is still evaluated over the record after the index scan, so both plans return the same rows; what changes is that the index no longer narrows the range."
 
-- [ ] **Step 8: Recompilar e rodar o teste, esperando sucesso**
+- [x] **Step 8: Recompilar e rodar o teste, esperando sucesso**
 
 ```
 cmd /c 'cd /d D:\GitHub\firebird\builds\win32 & set PATH=.;%PATH% & call make_all.bat'
@@ -1034,7 +1034,7 @@ D:\GitHub\firebird\temp\x64\Release\firebird\engine_test.exe --run_test=IntlSuit
 
 Esperado: `*** No errors detected`.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add src/intl/lc_ltrim_zero.cpp src/jrd/tests/LtrimZeroKeyTest.cpp builds/win32/msvc15/engine_test.vcxproj builds/win32/msvc15/engine_test.vcxproj.filters
@@ -1052,7 +1052,7 @@ git commit -m "feat(intl): order LTRIM_ZERO by normalized length before bytes"
 - Consumes: `TestDb` (métodos `ddl`, `exec`, `commit`, `ids`, `one`, `refresh`), `checkSamePlanResult(TestDb&, const char* label, const std::string& query, const std::string& naturalPlan, const std::string& indexPlan)`, `withPlan(const std::string&, const std::string&)`, macro `LTZ_TEST_CASE(name)`, domínio `D_LTZ` (`VARCHAR(20) CHARACTER SET WIN1252 COLLATE LTZ`) criado pelo construtor do `TestDb`.
 - Produces: nada consumido por outras tasks.
 
-- [ ] **Step 1: Variar o tamanho normalizado dentro do caso composto**
+- [x] **Step 1: Variar o tamanho normalizado dentro do caso composto**
 
 O caso `CompoundIndex` que já existe só usa valores que normalizam para tamanho 0 ou 1, então o prefixo de tamanho nunca varia entre segmentos e a interação com os stuff bytes não é exercida. Acrescentar duas linhas aos `INSERT` do caso (hoje linhas 795-802), antes do `db.commit()`:
 
@@ -1074,7 +1074,7 @@ E acrescentar, depois do último `checkSamePlanResult` do caso:
 		"SELECT CAST(COUNT(*) AS BIGINT) FROM C1 WHERE A = 'ab' AND B = '12345678901'"), 2);
 ```
 
-- [ ] **Step 2: Escrever os casos novos**
+- [x] **Step 2: Escrever os casos novos**
 
 Acrescentar em `src/jrd/tests/LtrimZeroCollationTest.cpp`, antes de `BOOST_AUTO_TEST_SUITE_END()	// LtrimZeroSuite`:
 
@@ -1309,7 +1309,7 @@ LTZ_TEST_CASE(DescendingIndexAtVolume)
 }
 ```
 
-- [ ] **Step 3: Rodar a suíte, esperando sucesso**
+- [x] **Step 3: Rodar a suíte, esperando sucesso**
 
 ```
 cmd /c 'cd /d D:\GitHub\firebird\builds\win32 & set PATH=.;%PATH% & call make_all.bat'
@@ -1320,7 +1320,7 @@ Esperado: `*** No errors detected`, com os casos antigos (`ConcurrentVolumeAndVa
 
 Se `CollationIsInstalled` falhar, o problema é a árvore de runtime e não o código; conferir que `temp\x64\Release\firebird\intl\fbintl.dll` e `fbintl.conf` existem.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/jrd/tests/LtrimZeroCollationTest.cpp
@@ -1341,7 +1341,7 @@ git commit -m "test(intl): cover numeric order, STARTING WITH and descending vol
 - Consumes: o formato de chave e a ordem definidos na Task 2.
 - Produces: `test_ltrim_zero.sql` verde contra o driver novo, usado como critério de aceite nas Tasks 1 e 5.
 
-- [ ] **Step 1: Trocar a expectativa de ordenação no script SQL**
+- [x] **Step 1: Trocar a expectativa de ordenação no script SQL**
 
 O único caso do script que muda é o `9.1`. A tabela `T_ORD` tem `'0009'`, `'0010'`, `'00100'`, `'a'`, `'B'`, que normalizam para `9`, `10`, `100`, `a`, `B`. Com a ordem por tamanho: `9`, `a`, `B` (tamanho 1, e `'9'=0x39 < 'A'=0x41 < 'B'=0x42`), depois `10` (tamanho 2), depois `100` (tamanho 3).
 
@@ -1380,7 +1380,7 @@ INSERT INTO T_RANGE VALUES ('12345678901');
 COMMIT;
 ```
 
-- [ ] **Step 2: Reenquadrar o bloco 6b, que perde 2 bytes de cauda**
+- [x] **Step 2: Reenquadrar o bloco 6b, que perde 2 bytes de cauda**
 
 Este é o único outro caso do script que muda, e muda para pior. Conferir empiricamente antes de editar, rodando só o bloco 6b, porque a conclusão abaixo vem de leitura de código e não de execução.
 
@@ -1436,14 +1436,14 @@ FROM RDB$DATABASE;
 
 Se a execução do bloco 6b mostrar comportamento diferente do descrito, **parar e reconciliar** antes de editar: a leitura de `intl.cpp` acima é a única base dessa previsão.
 
-- [ ] **Step 3: Conferir que os demais casos do script continuam válidos**
+- [x] **Step 3: Conferir que os demais casos do script continuam válidos**
 
 Não mexer em nada, só confirmar por leitura antes de rodar:
 - `6.5` espera `1,3,2`. Os três valores normalizam para `A`, `B` e `A`, todos de tamanho 1, então a ordem não muda.
 - `8.6`, `8.6b`, `8.6c` e `8.7` comparam `STARTING WITH` entre plano natural e plano de índice. A chave parcial vazia vira varredura completa com filtro residual, então as contagens continuam iguais.
 - `4.6` compara dois planos entre si; é auto-consistente.
 
-- [ ] **Step 4: Rodar o script contra o build local**
+- [x] **Step 4: Rodar o script contra o build local**
 
 ```
 D:\GitHub\firebird\temp\x64\Release\firebird\isql.exe -u SYSDBA -p masterkey ^
@@ -1454,7 +1454,7 @@ Esperado: nenhuma linha de falha no relatório final do script. Conferir explici
 
 Lembrete: `isql` embedded não abre banco que o servidor está usando, e vice-versa. Se aparecer "O arquivo já está sendo usado por outro processo", parar o serviço ou usar outro caminho de banco.
 
-- [ ] **Step 5: Atualizar a documentação da collation**
+- [x] **Step 5: Atualizar a documentação da collation**
 
 Em `doc/README.ltrim_zero.md`:
 - descrever a ordem: tamanho do normalizado primeiro, depois byte a byte em caixa alta;
@@ -1467,7 +1467,7 @@ Em `doc/README.ltrim_zero.md`:
 
 Em `doc/ltrim_zero_code_review.md`: revisar as afirmações que descrevem a chave como sendo a string normalizada e o `INTL_KEY_PARTIAL` como caso não especial, alinhando com o driver novo.
 
-- [ ] **Step 6: Corrigir a spec**
+- [x] **Step 6: Corrigir a spec**
 
 Em `docs/superpowers/specs/2026-08-02-ltrim-zero-numeric-order-design.md`:
 
@@ -1519,7 +1519,7 @@ ainda os separa. Só alcança coluna mais larga que 8192 bytes; a do domínio `T
 tem 20.
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add test_ltrim_zero.sql doc/README.ltrim_zero.md doc/ltrim_zero_code_review.md docs/superpowers/specs/2026-08-02-ltrim-zero-numeric-order-design.md
@@ -1537,7 +1537,7 @@ git commit -m "docs(intl): numeric ordering in the SQL suite and the collation d
 - Consumes: `builds/win32/make_ltrimzero.bat`, `src/intl/lc_ltrim_zero.cpp` já alterado, `test_ltrim_zero.sql` já atualizado.
 - Produces: `builds\win32\ltrimzero\fbltrimzero.dll` com a ordem nova, pronto para a janela de troca da Task 6.
 
-- [ ] **Step 1: Regerar o módulo**
+- [x] **Step 1: Regerar o módulo**
 
 ```
 cmd /c 'cd /d D:\GitHub\firebird\builds\win32 & set PATH=.;%PATH% & call setenvvar.bat & call make_ltrimzero.bat'
@@ -1545,7 +1545,7 @@ cmd /c 'cd /d D:\GitHub\firebird\builds\win32 & set PATH=.;%PATH% & call setenvv
 
 Esperado: mesma saída de `dumpbin` da Task 1 (dois exports sem decoração, só `KERNEL32.dll` como dependência).
 
-- [ ] **Step 2: Instalar num Firebird estoque e rodar a suíte SQL**
+- [x] **Step 2: Instalar num Firebird estoque e rodar a suíte SQL**
 
 Repetir os passos 6 e 7 da Task 1, agora com o dll novo, contra **um banco criado do zero** (o script já cria o seu).
 
@@ -1558,7 +1558,7 @@ Esperado: nenhuma falha, e `9.1` agora com `9,a,B,10,100`.
 
 Isso é o que fecha a frente 2: o mesmo comportamento sai do `fbintl.dll` do nosso build e do `fbltrimzero.dll` sobre engine estoque.
 
-- [ ] **Step 3: Comparar os dois relatórios**
+- [x] **Step 3: Comparar os dois relatórios**
 
 ```powershell
 Compare-Object (Get-Content D:\GitHub\firebird\ltz_local_after.txt) `
@@ -1567,7 +1567,7 @@ Compare-Object (Get-Content D:\GitHub\firebird\ltz_local_after.txt) `
 
 Esperado: só diferenças de caminho de arquivo e de tempo, nenhuma diferença de resultado. Diferença de resultado significa que o dll standalone e o `fbintl` embutido divergiram, o que só pode vir de flags de compilação; investigar antes de seguir.
 
-- [ ] **Step 4: Guardar o binário validado**
+- [x] **Step 4: Guardar o binário validado**
 
 ```powershell
 $stamp = 'numeric-order'
@@ -1577,7 +1577,7 @@ Copy-Item 'D:\GitHub\firebird\builds\win32\ltrimzero\fbltrimzero.dll' `
 
 O runbook da Task 6 referencia esse arquivo.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Nada de código muda aqui. Se o passo 3 exigiu ajuste de flags no `.bat`:
 
