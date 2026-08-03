@@ -69,7 +69,9 @@ Consequências:
 
 A relação é uma equivalência de verdade (`N(a) == N(b)` para uma função pura
 `N`), então `=`, `DISTINCT`, `GROUP BY`, `UNIQUE` e a ordem do índice sempre
-concordam. Por isso a collation **não** precisa de `TEXTTYPE_SEPARATE_UNIQUE`.
+concordam - exceto no limite de `MAX_KEY` documentado na seção 3, onde
+`DISTINCT` decide a partir da chave truncada e pode divergir de `=`. Por isso
+a collation **não** precisa de `TEXTTYPE_SEPARATE_UNIQUE`.
 
 A chave de índice deixou de ser a string normalizada sozinha. Agora é
 
@@ -81,7 +83,8 @@ O prefixo de tamanho é o que faz a ordenação ser por tamanho primeiro (ver
 seção 3). Duas entradas continuam na mesma classe de equivalência exatamente
 quando `N(a) == N(b)`, porque strings normalizadas iguais têm tamanho igual,
 então a chave continua sendo uma função pura de `N(x)`, e `=`/`DISTINCT`/
-`GROUP BY`/`UNIQUE` continuam concordando entre si e com a ordem do índice.
+`GROUP BY`/`UNIQUE` continuam concordando entre si e com a ordem do índice,
+com a mesma exceção de `MAX_KEY` da seção 3.
 
 > Ao editar o driver, mantenha `texttype_fn_compare` e
 > `texttype_fn_string_to_key` no mesmo `normalize_bounds`. Se os dois
@@ -125,23 +128,51 @@ precisa levar isso em conta, não só o caso de busca de raiz de CNPJ.
 
 **Acima de `MAX_KEY` (8192 bytes), `DISTINCT` (e empate de `ORDER BY`) podem
 parar de distinguir dois valores que difiram só nos 2 últimos bytes; `GROUP
-BY` não.** O motor sempre cortou a chave de sort de um valor mais largo que
-`MAX_KEY` no comprimento bruto do campo, truncando a cauda em silêncio
-(`intl.cpp:1002-1019`). O prefixo de tamanho de 2 bytes desta collation custa
-2 bytes a mais dessa cauda a partir do tamanho normalizado 8191 (para página
-de 8192 bytes). `DISTINCT` decide igualdade a partir da chave truncada
-(`SortedStream::compareKeys`, um memcmp sobre a chave, sem revalidar o valor
-nessa direção), então dois valores diferentes que colidam ali se fundem.
+BY` não.** `MAX_KEY` é uma constante de compilação (`constants.h:195`), então
+esse limite não depende do tamanho de página: verificado idêntico em página
+de 8192 e de 32768. O motor sempre cortou a chave de sort de um valor mais
+largo que `MAX_KEY` no comprimento bruto do campo, truncando a cauda em
+silêncio (`intl.cpp:1002-1019`).
+
+A truncagem depende da **largura declarada da coluna**, não só do tamanho
+normalizado de um valor: `INTL_key_length` dimensiona o espaço de chave de
+sort a partir do comprimento bruto do campo, igual para toda linha da coluna.
+Tamanho normalizado 8191 é necessário para a truncagem ser possível (abaixo
+disso, nenhuma largura de coluna dispara), mas não suficiente: numa coluna
+`VARCHAR(12000)`, `dstLen` é 12000 para toda linha, então a truncagem só
+começa em tamanho normalizado 11999 (verificado: 11998 não colide em
+`DISTINCT`, 11999 colide), não em 8191.
+
+`DISTINCT` decide igualdade a partir da chave truncada, mas não por
+`SortedStream::compareKeys` - essa função só é chamada por merge join
+(`MergeJoin.cpp:273`), sem relação com `DISTINCT`. O caminho real: quando
+`FLAG_PROJECT` está ligado, `SortedStream::init` (`SortedStream.cpp:190`)
+passa `RecordSource::rejectDuplicate` (`RecordSource.h:104`, devolve `true`
+incondicionalmente) como callback de duplicata do sort, disparado por
+`DO_32_COMPARE` sobre a chave crua em `sort.cpp:1301-1312` sempre que duas
+chaves adjacentes comparam iguais byte a byte. Não há nenhuma revalidação de
+valor nesse caminho - nem o retorno de `FLAG_KEY_VARY` do CORE-4909 que
+`SortedStream::compareKeys` tem (`SortedStream.cpp:286-317`). Por isso dois
+valores diferentes que colidam na chave truncada se fundem em `DISTINCT`.
+
 `GROUP BY` não: ele revalida com um compare real de valor ao decidir se um
-grupo novo começou (`AggregatedStream.cpp:308-325`, `lookForChange`), então
-continua correto independente da truncagem da chave, sempre. Um índice de
-verdade nunca alcança esse regime: `CREATE INDEX` valida o comprimento
-declarado da chave contra `page_size / 4` (`Database.h:654`), cujo teto
-também é 8192 no maior page size possível, e a truncagem só começa quando o
-comprimento declarado passa 8192 - os dois limites se cruzam de um jeito que
-nenhum índice chega lá. A menor coluna capaz de alcançar isso é bem mais
-larga que os 20 bytes do domínio `TDR_CNPJ`; a base do cliente não é
-alcançada.
+grupo novo começou (`AggregatedStream.cpp:308-345`, `lookForChange`,
+`MOV_compare` na linha 345), então continua correto independente da
+truncagem da chave, sempre.
+
+Índice de verdade nunca alcança esse regime, e a margem é folgada: `CREATE
+INDEX` calcula `key_length = ROUNDUP(INTL_key_length(len) + 1, 8)` (o `+1` é
+o byte indicador de NULL, `idx.cpp:876-877`) e recusa quando isso é maior ou
+igual a `page_size / 4` (`idx.cpp:879`, `Database.h:654`). No maior tamanho
+de página (32768, teto 8192), verificado: `VARCHAR(8181)` cria, `VARCHAR(8182)`
+falha com "key size exceeds implementation restriction", e `VARCHAR(8190)`
+falha antes ainda, numa checagem mais grosseira de `MAX_KEY` no DSQL
+(`DdlNodes.epp`) com "key size too big for index". A coluna mais larga ainda
+indexável é `VARCHAR(8181)`, 10 bytes inteiros abaixo de onde a truncagem de
+chave de sort começaria. Só chave de sort (`ORDER BY`, `GROUP BY`,
+`DISTINCT`), que não tem teto de `page_size / 4`, alcança esse regime. A
+menor coluna capaz de chegar lá é bem mais larga que os 20 bytes do domínio
+`TDR_CNPJ`; a base do cliente não é alcançada.
 
 **Case-insensitive só em ASCII.** Registrada em WIN1252/ISO8859_1, mas
 `'é' <> 'É'` na comparação. `UPPER()` e `LOWER()` continuam corretos com acento,
@@ -308,7 +339,7 @@ Resultado das duas passadas (Ubuntu 22.04, clang, x64):
 | Suíte C++ | exit 0, sem erros | exit 0, sem erros |
 | `make run_tests` completo | passou | passou |
 | Validação online do banco | 0 erros | 0 erros |
-| Suíte SQL | 52/52 | 52/52 |
+| Suíte SQL | 55/55 | 55/55 |
 | `fb_assert` de `intl.cpp:398-399` | inativo (Release) | **não disparou** |
 
 ---

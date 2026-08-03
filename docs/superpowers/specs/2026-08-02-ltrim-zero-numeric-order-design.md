@@ -105,27 +105,42 @@ cujo comprimento declarado está próximo de `page_size / 4` faz parte do trabal
 
 Há ainda o teto de `MAX_KEY = 8192` (`constants.h:195`) na chave de sort
 (`intl.cpp:1013-1014`): acima disso a chave é truncada e o retorno não é checado por
-`SortedStream.cpp:265`. Já é assim hoje, mas os 2 bytes não afetam todo consumidor da
-mesma forma. `GROUP BY` revalida fronteira de grupo com compare real de valor
-(`AggregatedStream.cpp:308-325`, `lookForChange`), então continua correto mesmo quando a
+`SortedStream.cpp:265`. `MAX_KEY` é constante de compilação, então esse limite não depende
+de tamanho de página: verificado idêntico em página de 8192 e de 32768. Já é assim hoje, mas
+os 2 bytes não afetam todo consumidor da mesma forma, e a truncagem depende da **largura
+declarada da coluna**, não só do tamanho normalizado de um valor: `INTL_key_length`
+dimensiona o espaço de chave de sort a partir do comprimento bruto do campo, igual para toda
+linha da coluna. Tamanho normalizado 8191 é necessário para a truncagem ser possível (abaixo
+disso, nenhuma largura de coluna dispara), mas não suficiente: numa coluna `VARCHAR(12000)`,
+`dstLen` é 12000 para toda linha, e a truncagem só começa em tamanho normalizado 11999
+(verificado: 11998 não colide em `DISTINCT`, 11999 colide), não em 8191.
+
+`GROUP BY` revalida fronteira de grupo com compare real de valor (`AggregatedStream.cpp:308-
+345`, `lookForChange`, `MOV_compare` na linha 345), então continua correto mesmo quando a
 chave de sort trunca, de forma incondicional, porque valor igual sempre produz chave igual
-e valor diferente é distinguido pelo compare, não pela chave. `DISTINCT` (e empate de
-`ORDER BY`) usa `SortedStream::compareKeys` (`SortedStream.cpp:283`), que aceita igualdade
-de chave crua sem revalidar o valor nessa direção, então dois valores que difiram só nos 2
-últimos bytes da forma normalizada podem colidir em `DISTINCT` a partir de tamanho
-normalizado 8191 (página de 8192 bytes) - verificado por execução, não só por leitura de
+e valor diferente é distinguido pelo compare, não pela chave. `DISTINCT` decide a partir da
+chave truncada, mas não por `SortedStream::compareKeys` - essa função só tem um chamador em
+toda a árvore, merge join (`MergeJoin.cpp:273`), sem relação com `DISTINCT`. O caminho real:
+quando `FLAG_PROJECT` está ligado, `SortedStream::init` (`SortedStream.cpp:190`) passa
+`RecordSource::rejectDuplicate` (`RecordSource.h:104`, devolve `true` incondicionalmente)
+como callback de duplicata do sort, disparado por `DO_32_COMPARE` sobre a chave crua
+(`sort.cpp:1301-1312`) sempre que duas chaves adjacentes comparam iguais byte a byte, sem
+nenhuma revalidação de valor - nem o retorno de `FLAG_KEY_VARY` do CORE-4909 que
+`compareKeys` tem (`SortedStream.cpp:286-317`). Por isso dois valores diferentes que colidam
+na chave truncada se fundem em `DISTINCT`, verificado por execução, não só por leitura de
 código (asserts 6b.3/6b.3b/6b.6 em `test_ltrim_zero.sql`).
 
-Índice de verdade nunca alcança esse regime. A truncagem exige `key_length(len) = len + 2`
-maior que `MAX_KEY` (8192), ou seja `len >= 8191`, mas `CREATE INDEX` valida o comprimento
-declarado da chave contra `page_size / 4` (`Database.h:654`, `idx.cpp:879`), cujo teto
-também é 8192 no maior page size possível. Em `len = 8191` o comprimento declarado é 8193,
-acima desse teto, e o índice é recusado na criação; em `len = 8190` o comprimento declarado
-é 8192, que cabe, e `dstLen` sai exatamente `len + 2`, sem truncar nada. Os dois limites se
-cruzam exatamente de um jeito que nenhum índice alcança o regime de truncagem; só chave de
-sort (`ORDER BY`, `GROUP BY`, `DISTINCT`), que não tem teto de `page_size / 4`, alcança. A
-menor coluna capaz de chegar lá é bem mais larga que os 20 bytes do domínio `TDR_CNPJ`; a
-base do cliente não é alcançada.
+Índice de verdade nunca alcança esse regime, e a margem é folgada. `CREATE INDEX` calcula
+`key_length = ROUNDUP(INTL_key_length(len) + 1, 8)` (o `+1` é o byte indicador de NULL,
+`idx.cpp:876-877`) e recusa quando isso é maior ou igual a `page_size / 4` (`idx.cpp:879`,
+`Database.h:654`). No maior tamanho de página (32768, teto 8192), verificado: `VARCHAR(8181)`
+cria, `VARCHAR(8182)` falha com "key size exceeds implementation restriction" (a checagem
+real de `idx.cpp`), e `VARCHAR(8190)` falha antes ainda, numa checagem mais grosseira de
+`MAX_KEY` no DSQL (`DdlNodes.epp`) com "key size too big for index". A coluna mais larga
+ainda indexável é `VARCHAR(8181)`, 10 bytes inteiros abaixo de onde a truncagem de chave de
+sort começaria. Só chave de sort (`ORDER BY`, `GROUP BY`, `DISTINCT`), que não tem teto de
+`page_size / 4`, alcança esse regime. A menor coluna capaz de chegar lá é bem mais larga que
+os 20 bytes do domínio `TDR_CNPJ`; a base do cliente não é alcançada.
 
 ## 5. STARTING WITH
 

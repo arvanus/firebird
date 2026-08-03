@@ -367,39 +367,61 @@ COMMIT;
 
 /* ------------------------------------------------------------------ */
 /* 6b. Values whose NORMALIZED form is longer than MAX_KEY (8192)      */
-/*     The engine caps the sort key at the raw field length            */
-/*     (intl.cpp:1002-1019) and does not check the return of           */
-/*     string_to_key (SortedStream.cpp:265), so a value wider than     */
-/*     MAX_KEY has always had its key truncated. The length prefix     */
-/*     this collation writes costs 2 more bytes of tail once that      */
-/*     truncation kicks in (normalized length 8191 and up, at the      */
-/*     8192 byte page size this database uses).                        */
+/*     MAX_KEY is a compile time constant (constants.h:195), so this   */
+/*     limit does not depend on page size: verified identical at       */
+/*     page 8192 and page 32768. The engine caps the sort key at the   */
+/*     raw field length (intl.cpp:1002-1019) and does not check the    */
+/*     return of string_to_key (SortedStream.cpp:265), so a value      */
+/*     wider than MAX_KEY has always had its key truncated.            */
+/*                                                                      */
+/*     Truncation depends on the DECLARED COLUMN WIDTH, not just a     */
+/*     value's normalized length: INTL_key_length sizes the sort key   */
+/*     slot from the raw field length, the same for every row in the   */
+/*     column. A normalized length of 8191 is necessary for truncation */
+/*     to be possible at all (below it, no column width can trigger    */
+/*     it), but not sufficient. In the VARCHAR(12000) column used      */
+/*     below, dstLen is 12000 for every row, so truncation only starts */
+/*     at normalized length 11999, costing this collation's 2 byte     */
+/*     length prefix exactly (verified: normalized length 11998 does   */
+/*     not collapse under DISTINCT, 11999 does).                       */
 /*                                                                      */
 /*     That tail loss does not reach every consumer the same way.      */
 /*     GROUP BY re-verifies group boundaries with a real value compare */
-/*     (AggregatedStream.cpp:308-325, lookForChange), so two different */
-/*     values with colliding truncated keys still end up in separate   */
-/*     groups: it is safe unconditionally, because equal values always */
-/*     produce identical keys and unequal values are told apart by the */
-/*     real compare, never by the key. DISTINCT relies on               */
-/*     SortedStream::compareKeys (SortedStream.cpp:283), a memcmp over  */
-/*     the key with no value level recheck in this direction, so two   */
-/*     values of the SAME normalized length that differ only in their  */
-/*     last 2 bytes stop separating under DISTINCT once that length    */
-/*     passes 8190.                                                    */
+/*     (AggregatedStream.cpp:308-345, lookForChange, MOV_compare at    */
+/*     line 345), so two different values with colliding truncated     */
+/*     keys still end up in separate groups: safe unconditionally,     */
+/*     because equal values always produce identical keys and unequal  */
+/*     values are told apart by the real compare, never by the key.    */
 /*                                                                      */
-/*     No real index can ever reach this regime. Truncation needs      */
-/*     len + 2 > MAX_KEY (8192), i.e. len >= 8191, but CREATE INDEX     */
-/*     validates the declared key length against page_size / 4         */
-/*     (Database.h:654, idx.cpp:879), whose ceiling is also 8192 at     */
-/*     the largest page size. At len = 8191 the declared length is     */
-/*     8193, over that ceiling, and the index is refused outright; at  */
-/*     len = 8190 the declared length is 8192, which fits, and dstLen  */
-/*     is then exactly len + 2, nothing truncated. The two limits      */
-/*     cross exactly so that no index ever reaches the truncating      */
-/*     regime; only sort keys (ORDER BY, GROUP BY, DISTINCT), which    */
-/*     have no page_size / 4 ceiling, can. The smallest column that    */
-/*     can hit this is far wider than the 20 byte TDR_CNPJ domain.     */
+/*     DISTINCT goes through a different path: when FLAG_PROJECT is    */
+/*     set, SortedStream::init (SortedStream.cpp:190) passes           */
+/*     RecordSource::rejectDuplicate (RecordSource.h:104, unconditional,*/
+/*     always returns true) as the sort's duplicate callback, fired    */
+/*     from DO_32_COMPARE over the raw sort key in sort.cpp:1301-1312  */
+/*     whenever two adjacent keys compare byte equal. There is NO      */
+/*     value level recheck anywhere in this path, not even the         */
+/*     CORE-4909 fallback that SortedStream::compareKeys has           */
+/*     (SortedStream.cpp:286-317; that function is unrelated to        */
+/*     DISTINCT, its only caller is MergeJoin.cpp:273). So two values  */
+/*     of the SAME normalized length that differ only in their last 2  */
+/*     bytes stop separating under DISTINCT once truncation reaches    */
+/*     them.                                                            */
+/*                                                                      */
+/*     No real index can ever reach this regime, by a wide margin.     */
+/*     CREATE INDEX computes key_length = ROUNDUP(INTL_key_length(len) */
+/*     + 1, 8) (the +1 is the null indicator byte, idx.cpp:876-877)    */
+/*     and refuses (isc_keytoobig) when that is >= page_size / 4       */
+/*     (idx.cpp:879, Database.h:654). At the largest page size          */
+/*     (32768, ceiling 8192), verified: VARCHAR(8181) creates,          */
+/*     VARCHAR(8182) fails "key size exceeds implementation             */
+/*     restriction" (the real idx.cpp check), and VARCHAR(8190) fails  */
+/*     earlier still, at a coarser DSQL level MAX_KEY gate             */
+/*     (DdlNodes.epp) with "key size too big for index". The widest    */
+/*     indexable column is 8181, a full 10 bytes short of where sort   */
+/*     key truncation could even begin. Only sort keys (ORDER BY,      */
+/*     GROUP BY, DISTINCT), which have no page_size / 4 ceiling, ever  */
+/*     reach it. The smallest column that can hit this is far wider    */
+/*     than the 20 byte TDR_CNPJ domain.                               */
 /* ------------------------------------------------------------------ */
 
 CREATE TABLE T_BIGKEY (
@@ -431,14 +453,15 @@ SELECT '6b.2 ORDER BY over 12000 byte keys: same order as the default collation'
        (SELECT LIST(ID, ',') FROM (SELECT ID FROM T_BIGKEY ORDER BY V))
 FROM RDB$DATABASE;
 
-/* DISTINCT goes through SortedStream::compareKeys, a memcmp over the
-   truncated key, so the two 12000 byte rows (same normalized length,
-   differing only in the last byte) collapse into one under LTRIM_ZERO
-   while the default collation, with no key truncation, still tells
-   them apart. This is the one place block 6b actually diverges from
-   the default collation control column; recorded as informative,
-   matching the convention used elsewhere in this file for known
-   limits, not asserted as an error. */
+/* DISTINCT rejects a record via RecordSource::rejectDuplicate whenever
+   DO_32_COMPARE finds two adjacent sort keys byte equal (sort.cpp:1301-
+   1312), with no value level recheck at all, so the two 12000 byte rows
+   (same normalized length, differing only in the last byte) collapse
+   into one under LTRIM_ZERO while the default collation, with no key
+   truncation, still tells them apart. This is the one place block 6b
+   actually diverges from the default collation control column;
+   recorded as informative, matching the convention used elsewhere in
+   this file for known limits, not asserted as an error. */
 INSERT INTO TST (KIND, NAME, EXPECTED, ACTUAL)
 SELECT 'I', '6b.3 KNOWN LIMIT: over MAX_KEY the last 2 bytes no longer separate DISTINCT values',
        '1',

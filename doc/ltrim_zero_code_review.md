@@ -3,7 +3,7 @@
 > **Status: corrigido e verificado no Windows e no Linux, em Release e em DEV_BUILD.**
 >
 > - Driver reescrito conforme P3 + C2 + A3 + A4.
-> - `test_ltrim_zero.sql`: **52 asserts, 52 PASS, 0 FAIL**.
+> - `test_ltrim_zero.sql`: **55 asserts, 55 PASS, 0 FAIL**.
 > - `src/jrd/tests/LtrimZeroCollationTest.cpp`: **7 casos, todos passando**, incluindo
 >   8 attachments concorrentes inserindo 50000 linhas, validação online do banco
 >   (`0 errors, 0 warnings, 0 fixed`), índice DESCENDING com chave vazia, índice
@@ -115,7 +115,7 @@ Comparador intransitivo alimenta merge join e nested loop -> resultado errado si
 
 VERIFICADO após a correção (asserts 6.x e 6b.x): valores de 32600 bytes comparam e agrupam certo, e num teste de controle com chave normalizada de 12000 bytes (acima de `MAX_KEY` = 8192) a coluna `LTRIM_ZERO` produz exatamente os mesmos 2 grupos que a mesma coluna com a collation padrão. Não há colapso nem regressão em relação ao resto do motor.
 
-> **Atualização (numeric order):** isso era verdade para o formato de chave da época desta revisão (chave = `N(x)`, sem prefixo). Com o prefixo de tamanho de 2 bytes (M3 abaixo), a truncagem em `MAX_KEY` passa a cortar 2 bytes a mais de cauda, e isso alcança `DISTINCT` (`SortedStream::compareKeys` é um memcmp sobre a chave truncada, sem revalidar valor): dois valores de mesmo tamanho normalizado que difiram só nos 2 últimos bytes colidem em `DISTINCT` a partir do tamanho normalizado 8191. `GROUP BY` continua batendo com a collation padrão, sem exceção, porque revalida com compare real de valor (`AggregatedStream.cpp:308-325`). Índice de verdade nunca alcança esse regime (ver M3). Asserts 6b.3/6b.3b/6b.6 em `test_ltrim_zero.sql` cobrem os três fatos.
+> **Atualização (numeric order):** isso era verdade para o formato de chave da época desta revisão (chave = `N(x)`, sem prefixo). Com o prefixo de tamanho de 2 bytes (M3 abaixo), a truncagem em `MAX_KEY` (constante de compilação, `constants.h:195`, sem depender de tamanho de página) passa a cortar 2 bytes a mais de cauda. Isso depende da largura declarada da coluna, não só do tamanho normalizado do valor: numa coluna `VARCHAR(12000)` como a deste teste, a truncagem só começa em tamanho normalizado 11999 (verificado: 11998 não colide, 11999 colide), não em 8191 - 8191 é o piso necessário para a truncagem ser possível em qualquer coluna, não o gatilho nesta. Isso alcança `DISTINCT`, mas não por `SortedStream::compareKeys` (essa função só é chamada por merge join, `MergeJoin.cpp:273`, sem relação com `DISTINCT`): o caminho real é `RecordSource::rejectDuplicate` (`RecordSource.h:104`, devolve `true` incondicionalmente), passado como callback de duplicata pelo sort quando `FLAG_PROJECT` está ligado (`SortedStream.cpp:190`) e disparado por `DO_32_COMPARE` sobre a chave crua (`sort.cpp:1301-1312`) sem nenhuma revalidação de valor - nem o retorno de `FLAG_KEY_VARY` do CORE-4909 que `compareKeys` tem (`SortedStream.cpp:286-317`). `GROUP BY` continua batendo com a collation padrão, sem exceção, porque revalida com compare real de valor (`AggregatedStream.cpp:308-345`, `MOV_compare` na linha 345). Índice de verdade nunca alcança esse regime, com folga: a coluna mais larga ainda indexável é `VARCHAR(8181)` no maior tamanho de página (ver M3). Asserts 6b.3/6b.3b/6b.6 em `test_ltrim_zero.sql` cobrem os fatos.
 
 No lado da chave, o dano era em sort/agrupamento, **não** no índice: `INTL_key_length` clampa em `MAX_KEY` = 8192 (`src/jrd/intl.cpp:982-1020`), então um valor acima de 32000 bytes nem chega a `string_to_key` pelo caminho do btree. Mas `str_to_key` também é chamado por SortedStream/HashJoin/AggNodes, para colunas **não** indexadas. Ali `SortedStream.cpp:265` ignora o retorno, deixando a chave de sort toda zerada (buffer pré-zerado em `SortedStream.cpp:208`). Resultado: **todos os valores acima de 32000 bytes colapsam num único grupo em ORDER BY / GROUP BY**.
 
@@ -142,6 +142,8 @@ Todas são "só zeros e espaços" e pela intenção da collation deveriam ser ig
 - Combinado com C1: `CHAR(2)` guardando `'0'` é `"0 "`, `N = " "`; literal `'0'` dá `"0"` -> `WHERE c = '0'` erra. `CHAR(n)` guardando `''` é tudo espaço, `N = " "`; literal `''` dá `""` -> `WHERE c = ''` erra.
 
 Ponto importante para não confundir: a relação **é** transitiva hoje. Igualdade é exatamente `N(a) == N(b)` para uma função pura `N`, então é equivalência de verdade, e compare/chave concordam (a chave **é** `N`, e a ordem memcmp com "prefixo menor primeiro" de `btr.cpp:4662-4672` bate com a regra de `fn_compare`). O defeito não é intransitividade - **as classes é que estão erradas**. A intransitividade só entra por C4.
+
+> **Atualização (numeric order):** "a chave **é** `N`" era verdade na época desta revisão e não é mais. A chave agora é `[2 bytes de tamanho, big-endian][N(x)]` (ver README seção 2 e spec seção 4), por causa da ordenação numérica. A concordância entre compare e chave que este parágrafo descreve continua valendo - duas entradas na mesma classe de equivalência têm `N` igual, logo tamanho igual, logo chave igual -, mas com uma exceção acima de `MAX_KEY` (ver M3 e C4): `DISTINCT` pode divergir de `=` ali porque decide a partir da chave truncada, não do valor.
 
 Corolário: **não** setar `TEXTTYPE_SEPARATE_UNIQUE`. Não é necessário. Mas, para essa propriedade sobreviver a edições futuras, `fn_compare` e `fn_str_to_key` devem compartilhar um único caminho de normalização, não duas cópias da lógica.
 
@@ -247,6 +249,8 @@ VERIFICADO: assert 8.3, `SIMILAR TO '%a%'` = 9 = `LIKE '%a%'` = `CONTAINING 'a'`
 ### M1. Pegadinhas semânticas para documentar (ou rejeitar)
 
 - **Ordem é por codepoint, não numérica**: `'10' < '9'` (0x31 < 0x39). Quem adota uma collation "tira zero à esquerda" costuma esperar ordem numérica. Compare e índice concordam entre si, ambos "errados" contra a expectativa.
+
+  > **Atualização (numeric order):** esse item foi resolvido, no sentido oposto ao texto acima. A ordem passou a ser por tamanho do normalizado primeiro, byte a byte em segundo (`docs/superpowers/specs/2026-08-02-ltrim-zero-numeric-order-design.md` seção 3), então agora `'9' < '10'`, batendo com a expectativa numérica, não contrariando ela. `doc/README.ltrim_zero.md` seção 3 documenta a ordem nova. Mantido aqui como registro histórico do que motivou a mudança.
 - Case-insensitive é só ASCII, registrada em WIN1252/ISO8859_1: `'é' <> 'É'` na comparação.
 - `UNIQUE`/PK vão rejeitar `'0A'` depois de `'A'` como duplicata. É a semântica pedida, mas precisa estar escrito.
 - O init rejeita tudo que não seja PAD SPACE (linha 261), então `CREATE COLLATION ... CASE INSENSITIVE` falha com erro confuso, mesmo a collation sendo case-insensitive.
@@ -259,7 +263,7 @@ VERIFICADO: assert 8.3, `SIMILAR TO '%a%'` = 9 = `LIKE '%a%'` = `CONTAINING 'a'`
 
 Na época desta revisão, retornar `len` era certo: a chave era exatamente `N(x)`, sem crescer, e `INTL_key_length` (`src/jrd/intl.cpp:982-1020`) clampava em `[iLength, MAX_KEY]` de qualquer forma.
 
-A ordenação numérica (`docs/superpowers/specs/2026-08-02-ltrim-zero-numeric-order-design.md` seção 4) muda essa conclusão: a chave passa a precisar de 2 bytes extras para o tamanho do normalizado, big-endian, na frente dos bytes normalizados, porque a ordem passou a ser por tamanho primeiro. `texttype_fn_key_length` agora devolve `len + 2`. Consequência operacional: o índice mais largo indexável encolhe 2 bytes (ver seção 4.1 da spec), e o mesmo clamp em `MAX_KEY` que antes só cortava a chave de sort agora corta 2 bytes a mais de cauda a partir do tamanho normalizado 8191. Isso atinge só `DISTINCT` (e empate de `ORDER BY`): `SortedStream::compareKeys` é um memcmp sobre a chave truncada, sem revalidar o valor. `GROUP BY` revalida com compare real de valor (`AggregatedStream.cpp:308-325`, `lookForChange`) e continua correto sempre. Índice de verdade nunca alcança esse regime, porque `CREATE INDEX` valida contra `page_size / 4` (`Database.h:654`), teto que também é 8192 no maior page size e cruza com o limite de `MAX_KEY` de um jeito que nenhum índice chega à truncagem (asserts 6b.3/6b.3b/6b.6 em `test_ltrim_zero.sql`).
+A ordenação numérica (`docs/superpowers/specs/2026-08-02-ltrim-zero-numeric-order-design.md` seção 4) muda essa conclusão: a chave passa a precisar de 2 bytes extras para o tamanho do normalizado, big-endian, na frente dos bytes normalizados, porque a ordem passou a ser por tamanho primeiro. `texttype_fn_key_length` agora devolve `len + 2`. Consequência operacional: o índice mais largo indexável encolhe 2 bytes (ver seção 4.1 da spec), e o mesmo clamp em `MAX_KEY` (constante de compilação, `constants.h:195`, o mesmo em qualquer tamanho de página) que antes só cortava a chave de sort agora corta 2 bytes a mais de cauda. Isso depende da largura declarada da coluna, não de um tamanho normalizado fixo: 8191 é o piso necessário para a truncagem ser possível, mas numa coluna larga o gatilho real fica bem acima disso (numa `VARCHAR(12000)`, começa em 11999). Isso atinge `DISTINCT`, através de `RecordSource::rejectDuplicate` (`RecordSource.h:104`, sempre `true`) disparado por `DO_32_COMPARE` sobre a chave crua quando o sort roda em modo `FLAG_PROJECT` (`SortedStream.cpp:190`, `sort.cpp:1301-1312`), sem nenhuma revalidação de valor - `SortedStream::compareKeys` não entra aqui, seu único chamador é merge join (`MergeJoin.cpp:273`). `GROUP BY` revalida com compare real de valor (`AggregatedStream.cpp:308-345`, `lookForChange`, `MOV_compare` na linha 345) e continua correto sempre. Índice de verdade nunca alcança esse regime, com folga: `CREATE INDEX` calcula `ROUNDUP(INTL_key_length(len) + 1, 8)` (`idx.cpp:876-877`) contra `page_size / 4` (`Database.h:654`, `idx.cpp:879`), e no maior tamanho de página (32768, teto 8192) a coluna mais larga ainda indexável é `VARCHAR(8181)` - verificado, não só calculado - 10 bytes abaixo de onde a truncagem de sort começaria (asserts 6b.3/6b.3b/6b.6 em `test_ltrim_zero.sql`).
 
 ### M4. Portabilidade Linux - limpa, fora de C2
 
@@ -281,7 +285,7 @@ A ordenação numérica (`docs/superpowers/specs/2026-08-02-ltrim-zero-numeric-o
 | 4 | A4 - aceitar `TEXTTYPE_ATTR_CASE_INSENSITIVE` | FEITO |
 | 5 | A2 residual - `texttype_impl = nullptr`, sem `fn_destroy` | FEITO |
 | 6 | M2 - `TEXTTYPE_ENTRY3` | FEITO |
-| 7 | Suíte de testes auto-verificável (`test_ltrim_zero.sql`, 48 asserts) | FEITO |
+| 7 | Suíte de testes auto-verificável (`test_ltrim_zero.sql`, 55 asserts) | FEITO |
 | 8 | M5 - apagar `src/burp/restore - Copia*.epp` | PENDENTE (fora do escopo da collation) |
 | 9 | O0 - reconstruir índices antes/depois de trocar a lib em produção | PENDENTE (operacional) |
 | 10 | O1 - re-rodar cmake / `CONFIGURE_DEPENDS` em build tree existente | PENDENTE (operacional) |
