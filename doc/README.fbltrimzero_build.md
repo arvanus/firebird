@@ -98,9 +98,23 @@ starting a server with the module installed and running `CREATE COLLATION
 There is no CMake or Autotools target for this module; it is built with a
 plain Makefile that lives with the module's own repository (not inside this
 tree), because it needs a Firebird source tree that has already been
-configured (`firebird.h` pulls in `gen/autoconfig.h`, which `./configure`
-generates on POSIX, unlike the Windows build, where `autoconfig_msvc.h` is
-already checked in). The Makefile:
+configured: `firebird.h` includes `gen/autoconfig.h`
+(`src/include/firebird.h:38`), and on POSIX that file is produced by the
+build, unlike the Windows build, where `autoconfig_msvc.h` is already checked
+in.
+
+Careful with what `./configure` actually leaves behind. It writes
+`src/include/gen/autoconfig.auto`, not `autoconfig.h`; `autoconfig.h` is a
+symlink to it that the makefile creates on the way in
+(`builds/posix/Makefile.in:334`). A tree that was only configured, never
+built, therefore fails the Makefile's own precondition check. Either run the
+build once, or create the link:
+
+```bash
+ln -sf "$PWD/src/include/gen/autoconfig.auto" "$PWD/src/include/gen/autoconfig.h"
+```
+
+The Makefile:
 
 ```make
 FB_SRC ?= ../firebird
@@ -152,6 +166,50 @@ glibc can be checked against an older target before shipping it. The actual
 size and the glibc baseline depend on the toolchain used to build; treat any
 number quoted for a specific build as a property of that build, not of the
 recipe.
+
+### Building it from a Windows checkout, in a container
+
+`doc/ltrim_zero_docker/build_module.sh` does the whole Linux recipe without a
+Linux machine: it clones the checkout mounted at `/repo` (a Windows tree has
+CRLF endings, which break `autogen.sh`), configures it, creates the
+`autoconfig.h` link, compiles, and runs the three checks.
+
+```bash
+docker build -t ltz-builder:22.04 doc/ltrim_zero_docker
+docker run --rm \
+    -v "$PWD":/repo:ro -v ltz_src:/src \
+    -v "$PWD/doc/ltrim_zero_docker":/scripts:ro -v "$PWD/out":/out \
+    ltz-builder:22.04 bash /scripts/build_module.sh
+```
+
+`/src` is a named volume, so a second run reuses the clone and the
+configuration instead of paying for both again.
+
+Measured for the build made on 2026-08-03 from that image (Ubuntu 22.04,
+glibc 2.35): 16200 bytes, both entry points exported, `libc.so.6` plus the
+dynamic linker as the only dependencies, and `GLIBC_2.2.5` as the single
+symbol version required. That last number is what makes one binary serve
+every current target: verified loading on Rocky Linux 9.8 (glibc 2.34) with
+both entry points resolving, and running the full SQL suite (55/55) inside
+`firebirdsql/firebird:5.0.3-noble` (glibc 2.39).
+
+### Baking it into a Firebird docker image
+
+`doc/ltrim_zero_docker/image/Dockerfile` derives from the official image and
+only drops the two files into `/opt/firebird/intl`:
+
+```bash
+cp out/fbltrimzero.so out/fbltrimzero.conf doc/ltrim_zero_docker/image/
+docker build -t srs/firebird:5.0.3-noble-ltrimzero doc/ltrim_zero_docker/image
+```
+
+To move it to a server without a registry:
+
+```bash
+docker save srs/firebird:5.0.3-noble-ltrimzero | gzip > fb-ltz.tar.gz
+# on the server
+gunzip -c fb-ltz.tar.gz | docker load
+```
 
 ## Installing
 
