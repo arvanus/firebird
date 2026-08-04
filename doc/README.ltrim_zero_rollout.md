@@ -191,10 +191,11 @@ reconstruído passar a enxergar o conflito.
 
 ### Ensaio executado em 2026-08-04
 
-Os passos 1 a 4 foram rodados de ponta a ponta no `SCHERER_001` do servidor de
-desenvolvimento (18,56 GB, NVMe), com o dll novo já instalado. O passo 5, o
-rename, ficou de fora de propósito: o ensaio não precisa dele e deixar os dois
-arquivos lado a lado permite comparar o antes com o depois.
+A janela inteira foi rodada de ponta a ponta no `SCHERER_001` do servidor de
+desenvolvimento (18,56 GB, NVMe), com o dll novo já instalado. Os passos 1 a 4
+primeiro, com o rename adiado de propósito, para poder conferir a cópia
+restaurada com o banco antigo ainda ao lado; o passo 5 depois, já com toda a
+seção 5 conferida.
 
 | etapa | duração | resultado |
 |---|---|---|
@@ -206,6 +207,23 @@ arquivos lado a lado permite comparar o antes com o depois.
 A janela do cliente é maior que isso: some o tempo de parar a aplicação, a
 troca do dll com o serviço parado e o rename. O `gfix` é opcional e pode sair
 da janela, já que o `-v` do restore não reportou nada.
+
+O rename do passo 5 não precisou do serviço parado. Com a aplicação fora, as
+únicas conexões que sobram no `MON$ATTACHMENTS` são as internas do engine
+(`Garbage Collector` e `Cache Writer`), e nesse estado o Windows deixa
+renomear os dois arquivos. Vale conferir antes:
+
+```sql
+SELECT COUNT(*) FROM MON$ATTACHMENTS WHERE MON$ATTACHMENT_ID <> CURRENT_CONNECTION;
+```
+
+O `Stop-Service` da troca do dll, esse sim, exige prompt elevado: sem
+elevação ele falha com "Não é possível abrir o serviço", que não parece erro
+de permissão mas é.
+
+Depois do rename, a seção 5 inteira foi rodada de novo, agora contra
+`D:\u\banco\scherer\SCHERER_001.FDB`, o caminho oficial. Todos os valores
+saíram iguais aos da cópia restaurada.
 
 Antes de começar, vale rodar o gate barato da seção 3 na origem, forçando
 varredura, porque uma duplicata silenciosa gravada na janela só aparece como
