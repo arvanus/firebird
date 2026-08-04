@@ -1,17 +1,23 @@
 /*
- * LTRIM_ZERO rollout inventory.
+ * ID_ZPAD_CI rollout inventory.
  *
  * Run with isql against every database on the server before swapping
- * fbltrimzero.dll. Everything is resolved through
+ * lrsintl.dll. Everything is resolved through
  * RDB$COLLATIONS.RDB$BASE_COLLATION_NAME, which holds the name given to
  * CREATE COLLATION ... FROM EXTERNAL (src/dsql/DdlNodes.epp:3977), never
  * through the local collation name: the DBA is free to call it anything.
+ *
+ * Every filter matches the old external names (*_LTRIM_ZERO) as well as the
+ * current ones. This is an inventory of a database that has NOT been migrated
+ * yet, and such a database still carries the name the collation shipped under
+ * before the rename. Matching only the current names would report zero rows on
+ * exactly the databases this script exists to find.
  */
 
 SET LIST ON;
 
 /* ---------------------------------------------------------------- */
-/* 1. Collations in this database that come from the LTRIM_ZERO      */
+/* 1. Collations in this database that come from the ID_ZPAD_CI      */
 /*    module, whatever local name they were given.                   */
 /* ---------------------------------------------------------------- */
 
@@ -22,7 +28,8 @@ SELECT TRIM(C.RDB$COLLATION_NAME)      AS LOCAL_NAME,
        C.RDB$COLLATION_ATTRIBUTES      AS ATTRS
 FROM RDB$COLLATIONS C
 WHERE TRIM(COALESCE(C.RDB$BASE_COLLATION_NAME, C.RDB$COLLATION_NAME))
-      IN ('ISO8859_1_LTRIM_ZERO', 'WIN1252_LTRIM_ZERO');
+      IN ('ISO8859_1_ID_ZPAD_CI', 'WIN1252_ID_ZPAD_CI',
+           'ISO8859_1_LTRIM_ZERO', 'WIN1252_LTRIM_ZERO');
 
 /* ---------------------------------------------------------------- */
 /* 2. Columns using one of those collations.                         */
@@ -32,12 +39,13 @@ WHERE TRIM(COALESCE(C.RDB$BASE_COLLATION_NAME, C.RDB$COLLATION_NAME))
 /*    the join carries both.                                         */
 /* ---------------------------------------------------------------- */
 
-WITH LTZ AS (
+WITH IDZ AS (
     SELECT C.RDB$COLLATION_ID AS COLL_ID,
            C.RDB$CHARACTER_SET_ID AS CS_ID
     FROM RDB$COLLATIONS C
     WHERE TRIM(COALESCE(C.RDB$BASE_COLLATION_NAME, C.RDB$COLLATION_NAME))
-          IN ('ISO8859_1_LTRIM_ZERO', 'WIN1252_LTRIM_ZERO')
+          IN ('ISO8859_1_ID_ZPAD_CI', 'WIN1252_ID_ZPAD_CI',
+           'ISO8859_1_LTRIM_ZERO', 'WIN1252_LTRIM_ZERO')
 )
 SELECT TRIM(RF.RDB$RELATION_NAME) AS REL,
        TRIM(RF.RDB$FIELD_NAME)    AS FLD,
@@ -45,8 +53,8 @@ SELECT TRIM(RF.RDB$RELATION_NAME) AS REL,
        F.RDB$FIELD_LENGTH         AS BYTES
 FROM RDB$RELATION_FIELDS RF
 JOIN RDB$FIELDS F ON F.RDB$FIELD_NAME = RF.RDB$FIELD_SOURCE
-JOIN LTZ ON LTZ.CS_ID = F.RDB$CHARACTER_SET_ID
-        AND LTZ.COLL_ID = COALESCE(RF.RDB$COLLATION_ID, F.RDB$COLLATION_ID, 0)
+JOIN IDZ ON IDZ.CS_ID = F.RDB$CHARACTER_SET_ID
+        AND IDZ.COLL_ID = COALESCE(RF.RDB$COLLATION_ID, F.RDB$COLLATION_ID, 0)
 ORDER BY 1, 2;
 
 /* ---------------------------------------------------------------- */
@@ -56,19 +64,20 @@ ORDER BY 1, 2;
 /*    deactivated with ALTER INDEX (trig.h:1377-1378).               */
 /* ---------------------------------------------------------------- */
 
-WITH LTZ AS (
+WITH IDZ AS (
     SELECT C.RDB$COLLATION_ID AS COLL_ID,
            C.RDB$CHARACTER_SET_ID AS CS_ID
     FROM RDB$COLLATIONS C
     WHERE TRIM(COALESCE(C.RDB$BASE_COLLATION_NAME, C.RDB$COLLATION_NAME))
-          IN ('ISO8859_1_LTRIM_ZERO', 'WIN1252_LTRIM_ZERO')
+          IN ('ISO8859_1_ID_ZPAD_CI', 'WIN1252_ID_ZPAD_CI',
+           'ISO8859_1_LTRIM_ZERO', 'WIN1252_LTRIM_ZERO')
 ),
 COLS AS (
     SELECT RF.RDB$RELATION_NAME AS REL, RF.RDB$FIELD_NAME AS FLD
     FROM RDB$RELATION_FIELDS RF
     JOIN RDB$FIELDS F ON F.RDB$FIELD_NAME = RF.RDB$FIELD_SOURCE
-    JOIN LTZ ON LTZ.CS_ID = F.RDB$CHARACTER_SET_ID
-            AND LTZ.COLL_ID = COALESCE(RF.RDB$COLLATION_ID, F.RDB$COLLATION_ID, 0)
+    JOIN IDZ ON IDZ.CS_ID = F.RDB$CHARACTER_SET_ID
+            AND IDZ.COLL_ID = COALESCE(RF.RDB$COLLATION_ID, F.RDB$COLLATION_ID, 0)
 )
 SELECT TRIM(I.RDB$INDEX_NAME)                  AS IDX,
        TRIM(I.RDB$RELATION_NAME)               AS REL,
@@ -113,12 +122,13 @@ ORDER BY 2, 1;
 /*    wide margin is safe.                                           */
 /* ---------------------------------------------------------------- */
 
-WITH LTZ AS (
+WITH IDZ AS (
     SELECT C.RDB$COLLATION_ID AS COLL_ID,
            C.RDB$CHARACTER_SET_ID AS CS_ID
     FROM RDB$COLLATIONS C
     WHERE TRIM(COALESCE(C.RDB$BASE_COLLATION_NAME, C.RDB$COLLATION_NAME))
-          IN ('ISO8859_1_LTRIM_ZERO', 'WIN1252_LTRIM_ZERO')
+          IN ('ISO8859_1_ID_ZPAD_CI', 'WIN1252_ID_ZPAD_CI',
+           'ISO8859_1_LTRIM_ZERO', 'WIN1252_LTRIM_ZERO')
 ),
 SEG AS (
     SELECT I.RDB$INDEX_NAME AS IDX,
@@ -126,14 +136,14 @@ SEG AS (
            COALESCE(I.RDB$INDEX_TYPE, 0) AS IS_DESC,
            COUNT(*) AS SEGMENTS,
            SUM(F.RDB$FIELD_LENGTH) AS RAW_BYTES,
-           SUM(CASE WHEN LTZ.COLL_ID IS NULL THEN 0 ELSE 2 END) AS EXTRA_BYTES
+           SUM(CASE WHEN IDZ.COLL_ID IS NULL THEN 0 ELSE 2 END) AS EXTRA_BYTES
     FROM RDB$INDEX_SEGMENTS S
     JOIN RDB$INDICES I ON I.RDB$INDEX_NAME = S.RDB$INDEX_NAME
     JOIN RDB$RELATION_FIELDS RF ON RF.RDB$RELATION_NAME = I.RDB$RELATION_NAME
                                AND RF.RDB$FIELD_NAME = S.RDB$FIELD_NAME
     JOIN RDB$FIELDS F ON F.RDB$FIELD_NAME = RF.RDB$FIELD_SOURCE
-    LEFT JOIN LTZ ON LTZ.CS_ID = F.RDB$CHARACTER_SET_ID
-                 AND LTZ.COLL_ID = COALESCE(RF.RDB$COLLATION_ID, F.RDB$COLLATION_ID, 0)
+    LEFT JOIN IDZ ON IDZ.CS_ID = F.RDB$CHARACTER_SET_ID
+                 AND IDZ.COLL_ID = COALESCE(RF.RDB$COLLATION_ID, F.RDB$COLLATION_ID, 0)
     GROUP BY 1, 2, 3
 )
 SELECT TRIM(IDX) AS IDX, TRIM(REL) AS REL, SEGMENTS, RAW_BYTES, EXTRA_BYTES,

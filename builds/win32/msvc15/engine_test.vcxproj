@@ -191,10 +191,10 @@
     <ClCompile Include="..\..\..\src\jrd\tests\EngineTest.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\..\src\jrd\tests\LtrimZeroCollationTest.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\tests\IdZpadCollationTest.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\..\..\src\jrd\tests\LtrimZeroKeyTest.cpp" />
+    <ClCompile Include="..\..\..\src\jrd\tests\IdZpadKeyTest.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\src\jrd\tests\RecordNumberTest.cpp" />

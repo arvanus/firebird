@@ -1,5 +1,12 @@
 # Ordenação numérica na collation LTRIM_ZERO - Plano de implementação
 
+> **Rename note.** This is a dated record, written while the collation was called
+> `LTRIM_ZERO` and the standalone module `fbltrimzero`. Every name and path below is
+> the one in use at the time and was deliberately left untouched. Current state:
+> the collation is `ID_ZPAD_CI` (`WIN1252_ID_ZPAD_CI`, `ISO8859_1_ID_ZPAD_CI`), the
+> driver is `src/intl/lc_id_zpad_ci.cpp`, the standalone module is `lrsintl`, and the
+> live reference is `doc/README.id_zpad_ci.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Fazer a collation `LTRIM_ZERO` ordenar pelo tamanho da forma normalizada antes do conteúdo, para que `ORDER BY` e `BETWEEN` parem de tratar `0001A34` como menor que `9`, e entregar a receita de build e o runbook de troca em produção.

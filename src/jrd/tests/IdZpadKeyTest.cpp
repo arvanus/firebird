@@ -1,18 +1,18 @@
 /*
  *	PROGRAM:	JRD engine tests
- *	MODULE:		LtrimZeroKeyTest.cpp
- *	DESCRIPTION:	Unit tests for the LTRIM_ZERO ordering and sort key
+ *	MODULE:		IdZpadKeyTest.cpp
+ *	DESCRIPTION:	Unit tests for the ID_ZPAD_CI ordering and sort key
  *
  * These tests call the collation driver directly, in process, with no server
  * and no database. They own the one invariant everything else rests on: the
  * sign of compare() must equal the sign of a plain byte comparison of the two
  * sort keys. If those ever disagree, an index stops describing the order the
  * engine believes it describes, and UNIQUE, DISTINCT and BETWEEN all start
- * lying. LtrimZeroCollationTest.cpp checks the same property through a real
+ * lying. IdZpadCollationTest.cpp checks the same property through a real
  * b-tree, which is slower and much harder to read when it breaks.
  *
  * Run only this suite with:
- *     engine_test --run_test=IntlSuite/LtrimZeroKeySuite
+ *     engine_test --run_test=IntlSuite/IdZpadKeySuite
  */
 
 #include "firebird.h"
@@ -26,10 +26,10 @@
 // A private copy of the driver is compiled into this test: the functions
 // behind the texttype vtable are static, so they cannot be reached any other
 // way, and the entry point is renamed so it can never collide with the copy
-// that lives inside fbintl. src/intl/ltrimzero/ld_min.cpp uses the same trick.
-#define LCLTRIMZERO_init LCLTRIMZERO_init_under_test
-#include "../../intl/lc_ltrim_zero.cpp"
-#undef LCLTRIMZERO_init
+// that lives inside fbintl. src/intl/lrsintl/ld_min.cpp uses the same trick.
+#define LCIDZPADCI_init LCIDZPADCI_init_under_test
+#include "../../intl/lc_id_zpad_ci.cpp"
+#undef LCIDZPADCI_init
 
 namespace
 {
@@ -70,8 +70,8 @@ public:
 	{
 		memset(&tt, 0, sizeof(tt));
 
-		const INTL_BOOL ok = LCLTRIMZERO_init_under_test(&tt, nullptr,
-			"WIN1252_LTRIM_ZERO", "WIN1252", attributes, nullptr, 0, nullptr);
+		const INTL_BOOL ok = LCIDZPADCI_init_under_test(&tt, nullptr,
+			"WIN1252_ID_ZPAD_CI", "WIN1252", attributes, nullptr, 0, nullptr);
 
 		BOOST_REQUIRE(ok);
 		BOOST_REQUIRE(tt.texttype_fn_compare != nullptr);
@@ -150,7 +150,7 @@ std::vector<std::string> allValues()
 
 
 BOOST_AUTO_TEST_SUITE(IntlSuite)
-BOOST_AUTO_TEST_SUITE(LtrimZeroKeySuite)
+BOOST_AUTO_TEST_SUITE(IdZpadKeySuite)
 
 
 // The headline behaviour: '9' sorts before '0001A34' because the normalized
@@ -425,5 +425,5 @@ BOOST_AUTO_TEST_CASE(RangeOverDifferentLengthsExcludesShorterValues)
 }
 
 
-BOOST_AUTO_TEST_SUITE_END()	// LtrimZeroKeySuite
+BOOST_AUTO_TEST_SUITE_END()	// IdZpadKeySuite
 BOOST_AUTO_TEST_SUITE_END()	// IntlSuite

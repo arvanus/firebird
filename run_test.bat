@@ -1,5 +1,5 @@
 @echo off
-REM Self-checking test suite for the LTRIM_ZERO collation.
+REM Self-checking test suite for the ID_ZPAD_CI collation.
 REM The suite passes when the report ends with *** SUITE PASSED *** and FAILED = 0.
 
 setlocal
@@ -16,13 +16,13 @@ if not exist "%ISQL%" (
 )
 
 echo ============================================
-echo Testing LTRIM_ZERO collation
+echo Testing ID_ZPAD_CI collation
 echo ============================================
 echo.
 
 if exist test_ltrim.fdb del /q test_ltrim.fdb
 
-"%ISQL%" -input test_ltrim_zero.sql
+"%ISQL%" -input test_id_zpad_ci.sql
 
 echo.
 echo ============================================

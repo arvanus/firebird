@@ -1,14 +1,14 @@
 #!/bin/bash
-# Builds the standalone fbltrimzero.so out of a checkout mounted at /repo,
-# following the Linux recipe in doc/README.fbltrimzero_build.md.
+# Builds the standalone lrsintl.so out of a checkout mounted at /repo,
+# following the Linux recipe in doc/README.lrsintl_build.md.
 #
 # Run it inside the image built from the Dockerfile next to this file:
 #
-#   docker build -t ltz-builder:22.04 doc/ltrim_zero_docker
+#   docker build -t idz-builder:22.04 doc/lrsintl_docker
 #   docker run --rm \
-#       -v "$PWD":/repo:ro -v ltz_src:/src \
-#       -v "$PWD/doc/ltrim_zero_docker":/scripts:ro -v "$PWD/out":/out \
-#       ltz-builder:22.04 bash /scripts/build_module.sh
+#       -v "$PWD":/repo:ro -v idz_src:/src \
+#       -v "$PWD/doc/lrsintl_docker":/scripts:ro -v "$PWD/out":/out \
+#       idz-builder:22.04 bash /scripts/build_module.sh
 #
 # The tree is cloned into /src because a Windows checkout carries CRLF
 # endings, which break autogen.sh. /src is a named volume so a second run
@@ -48,19 +48,19 @@ mkdir -p /out
 g++ -O2 -std=c++17 -fPIC -fno-rtti -pipe -Wall -Wno-unused-parameter \
     -DLINUX -DAMD64 -DFB_SEND_FLAGS=MSG_NOSIGNAL \
     -I/src/src -I/src/src/include -I/src/src/include/gen \
-    -shared -o /out/fbltrimzero.so /src/src/intl/ltrimzero/ld_min.cpp
-cp /src/src/intl/ltrimzero/fbltrimzero.conf /out/
+    -shared -o /out/lrsintl.so /src/src/intl/lrsintl/ld_min.cpp
+cp /src/src/intl/lrsintl/lrsintl.conf /out/
 ls -l /out
 
 echo "===== exported entry points"
-nm -D --defined-only /out/fbltrimzero.so | grep -E 'LD_(version|lookup_texttype_with_status)' \
+nm -D --defined-only /out/lrsintl.so | grep -E 'LD_(version|lookup_texttype_with_status)' \
     || { echo "MISSING entry points"; exit 1; }
 
 echo "===== shared library dependencies"
-ldd /out/fbltrimzero.so
+ldd /out/lrsintl.so
 
 echo "===== required glibc symbol versions"
-objdump -T /out/fbltrimzero.so | grep -o 'GLIBC_[0-9.]*' | sort -u
+objdump -T /out/lrsintl.so | grep -o 'GLIBC_[0-9.]*' | sort -u
 
 echo "===== builder glibc"
 ldd --version | head -1

@@ -1,11 +1,11 @@
 ﻿/*
  *	PROGRAM:	JRD engine tests
- *	MODULE:		LtrimZeroCollationTest.cpp
- *	DESCRIPTION:	Integration tests for the LTRIM_ZERO collation
+ *	MODULE:		IdZpadCollationTest.cpp
+ *	DESCRIPTION:	Integration tests for the ID_ZPAD_CI collation
  *
  * These tests deliberately do NOT re-cover the collation semantics (equality
  * classes, PAD SPACE, empty class, LIKE / SIMILAR TO). That is owned by
- * test_ltrim_zero.sql. What lives here is everything that a plain isql script
+ * test_id_zpad_ci.sql. What lives here is everything that a plain isql script
  * cannot reach:
  *
  *   - concurrency: several attachments writing at the same time
@@ -19,7 +19,7 @@
  *     return the very same rows, not merely the same number of rows
  *
  * Run only this suite with:
- *     engine_test --run_test=EngineSuite/LtrimZeroSuite
+ *     engine_test --run_test=EngineSuite/IdZpadSuite
  */
 
 #include "firebird.h"
@@ -42,11 +42,11 @@ namespace
 typedef std::vector<ISC_INT64> IdList;
 
 const char* const CREATE_COLLATION_SQL =
-	"CREATE COLLATION LTZ FOR WIN1252"
-	" FROM EXTERNAL ('WIN1252_LTRIM_ZERO') CASE INSENSITIVE PAD SPACE";
+	"CREATE COLLATION IDZ FOR WIN1252"
+	" FROM EXTERNAL ('WIN1252_ID_ZPAD_CI') CASE INSENSITIVE PAD SPACE";
 
 const char* const CREATE_DOMAIN_SQL =
-	"CREATE DOMAIN D_LTZ AS VARCHAR(20) CHARACTER SET WIN1252 COLLATE LTZ";
+	"CREATE DOMAIN D_IDZ AS VARCHAR(20) CHARACTER SET WIN1252 COLLATE IDZ";
 
 
 std::string describe(IMaster* master, const FbException& e)
@@ -129,7 +129,7 @@ IdList fetchIds(ThrowStatusWrapper& st, IAttachment* att, ITransaction* tra, con
 
 
 // A database created from scratch for one test case, with the collation and
-// the D_LTZ domain already in place.
+// the D_IDZ domain already in place.
 class TestDb
 {
 public:
@@ -139,7 +139,7 @@ public:
 		  prov(master->getDispatcher()),
 		  att(nullptr),
 		  tra(nullptr),
-		  path(std::string("ltz_") + name + ".fdb")
+		  path(std::string("idz_") + name + ".fdb")
 	{
 		remove(path.c_str());
 
@@ -420,7 +420,7 @@ void checkSamePlanResult(TestDb& db, const char* label, const std::string& query
 // FbException does not derive from std::exception, so Boost.Test would only
 // report "unknown type" for it. Every test body is wrapped so that a Firebird
 // error arrives as a readable failure instead.
-#define LTZ_TEST_CASE(name)								\
+#define IDZ_TEST_CASE(name)								\
 	static void name##Body();							\
 	BOOST_AUTO_TEST_CASE(name)							\
 	{													\
@@ -437,7 +437,7 @@ void checkSamePlanResult(TestDb& db, const char* label, const std::string& query
 
 
 BOOST_AUTO_TEST_SUITE(EngineSuite)
-BOOST_AUTO_TEST_SUITE(LtrimZeroSuite)
+BOOST_AUTO_TEST_SUITE(IdZpadSuite)
 
 
 // Runs first and fails loudly when the runtime tree is incomplete, so the
@@ -460,7 +460,7 @@ BOOST_AUTO_TEST_CASE(CollationIsInstalled)
 	ITransaction* tra = nullptr;
 
 	// PXW_SPAN is a control: it lives in the same fbintl.conf block as
-	// WIN1252_LTRIM_ZERO. If the control also fails, the runtime tree cannot
+	// WIN1252_ID_ZPAD_CI. If the control also fails, the runtime tree cannot
 	// register anything from fbintl.conf and the failure is not ours.
 	struct Probe
 	{
@@ -473,19 +473,19 @@ BOOST_AUTO_TEST_CASE(CollationIsInstalled)
 	{
 		{ "CREATE COLLATION P1 FOR WIN1252 FROM EXTERNAL ('PXW_SPAN')",
 		  "control collation from fbintl.conf", false },
-		{ "CREATE COLLATION P2 FOR WIN1252 FROM EXTERNAL ('WIN1252_LTRIM_ZERO')",
-		  "WIN1252_LTRIM_ZERO", true },
-		{ "CREATE COLLATION P3 FOR ISO8859_1 FROM EXTERNAL ('ISO8859_1_LTRIM_ZERO')",
-		  "ISO8859_1_LTRIM_ZERO", true }
+		{ "CREATE COLLATION P2 FOR WIN1252 FROM EXTERNAL ('WIN1252_ID_ZPAD_CI')",
+		  "WIN1252_ID_ZPAD_CI", true },
+		{ "CREATE COLLATION P3 FOR ISO8859_1 FROM EXTERNAL ('ISO8859_1_ID_ZPAD_CI')",
+		  "ISO8859_1_ID_ZPAD_CI", true }
 	};
 
 	bool controlOk = true;
 
 	try
 	{
-		remove("ltz_env.fdb");
+		remove("idz_env.fdb");
 		Dpb dpb(master, st);
-		att = prov->createDatabase(&st, "ltz_env.fdb", dpb.length(), dpb.buffer());
+		att = prov->createDatabase(&st, "idz_env.fdb", dpb.length(), dpb.buffer());
 		tra = att->startTransaction(&st, 0, nullptr);
 
 		for (const Probe& probe : probes)
@@ -519,7 +519,7 @@ BOOST_AUTO_TEST_CASE(CollationIsInstalled)
 			{
 				BOOST_CHECK_MESSAGE(error.empty(), probe.what << " could not be created."
 					<< (controlOk
-						? " The control collation loaded, so this is specific to LTRIM_ZERO."
+						? " The control collation loaded, so this is specific to ID_ZPAD_CI."
 						: " The control collation also failed: this runtime tree cannot load"
 						  " anything from fbintl.conf, so the whole suite is inconclusive.")
 					<< " " << error);
@@ -559,7 +559,7 @@ BOOST_AUTO_TEST_CASE(CollationIsInstalled)
  * mismatch as index corruption.
  * ------------------------------------------------------------------------ */
 
-LTZ_TEST_CASE(ConcurrentVolumeAndValidation)
+IDZ_TEST_CASE(ConcurrentVolumeAndValidation)
 {
 	const int THREADS = 8;
 	const int PER_THREAD = 6250;
@@ -568,7 +568,7 @@ LTZ_TEST_CASE(ConcurrentVolumeAndValidation)
 
 	TestDb db("volume");
 
-	db.ddl("CREATE TABLE VOL (ID INTEGER NOT NULL PRIMARY KEY, V D_LTZ)");
+	db.ddl("CREATE TABLE VOL (ID INTEGER NOT NULL PRIMARY KEY, V D_IDZ)");
 	db.ddl("CREATE INDEX IX_VOL_V ON VOL(V)");
 
 	// Row i gets a value of the class 'K<nn>' with nn = i mod 25, prefixed by
@@ -728,11 +728,11 @@ LTZ_TEST_CASE(ConcurrentVolumeAndValidation)
  * else in the test material.
  * ------------------------------------------------------------------------ */
 
-LTZ_TEST_CASE(DescendingIndexAndEmptyKey)
+IDZ_TEST_CASE(DescendingIndexAndEmptyKey)
 {
 	TestDb db("descending");
 
-	db.ddl("CREATE TABLE D1 (ID INTEGER, V D_LTZ)");
+	db.ddl("CREATE TABLE D1 (ID INTEGER, V D_IDZ)");
 
 	db.exec("INSERT INTO D1 VALUES (1, '000')");
 	db.exec("INSERT INTO D1 VALUES (2, '   ')");
@@ -786,11 +786,11 @@ LTZ_TEST_CASE(DescendingIndexAndEmptyKey)
  * case covered everywhere else.
  * ------------------------------------------------------------------------ */
 
-LTZ_TEST_CASE(CompoundIndex)
+IDZ_TEST_CASE(CompoundIndex)
 {
 	TestDb db("compound");
 
-	db.ddl("CREATE TABLE C1 (ID INTEGER, A D_LTZ, B D_LTZ)");
+	db.ddl("CREATE TABLE C1 (ID INTEGER, A D_IDZ, B D_IDZ)");
 
 	db.exec("INSERT INTO C1 VALUES (1, '000',  'X')");
 	db.exec("INSERT INTO C1 VALUES (2, '  ',   '0X')");
@@ -841,12 +841,12 @@ LTZ_TEST_CASE(CompoundIndex)
  * calls equal.
  * ------------------------------------------------------------------------ */
 
-LTZ_TEST_CASE(PrimaryAndForeignKey)
+IDZ_TEST_CASE(PrimaryAndForeignKey)
 {
 	TestDb db("keys");
 
-	db.ddl("CREATE TABLE PARENT (V D_LTZ NOT NULL PRIMARY KEY)");
-	db.ddl("CREATE TABLE CHILD (ID INTEGER, PV D_LTZ REFERENCES PARENT(V))");
+	db.ddl("CREATE TABLE PARENT (V D_IDZ NOT NULL PRIMARY KEY)");
+	db.ddl("CREATE TABLE CHILD (ID INTEGER, PV D_IDZ REFERENCES PARENT(V))");
 
 	db.exec("INSERT INTO PARENT VALUES ('A')");
 	db.exec("INSERT INTO PARENT VALUES ('B')");
@@ -882,11 +882,11 @@ LTZ_TEST_CASE(PrimaryAndForeignKey)
  * exactly the procedure documented for deploying a change to this collation.
  * ------------------------------------------------------------------------ */
 
-LTZ_TEST_CASE(BackupRestoreRoundTrip)
+IDZ_TEST_CASE(BackupRestoreRoundTrip)
 {
 	TestDb db("roundtrip");
 
-	db.ddl("CREATE TABLE R1 (ID INTEGER NOT NULL PRIMARY KEY, V D_LTZ, W D_LTZ)");
+	db.ddl("CREATE TABLE R1 (ID INTEGER NOT NULL PRIMARY KEY, V D_IDZ, W D_IDZ)");
 	db.ddl("CREATE INDEX IX_R1_V ON R1(V)");
 	db.ddl("CREATE DESCENDING INDEX IX_R1_W ON R1(W)");
 	db.ddl("CREATE INDEX IX_R1_VW ON R1(V, W)");
@@ -915,8 +915,8 @@ LTZ_TEST_CASE(BackupRestoreRoundTrip)
 	BOOST_REQUIRE(!expectedProbe.empty());
 
 	const std::string source = db.path;
-	const std::string backup = "ltz_roundtrip.fbk";
-	const std::string restored = "ltz_restored.fdb";
+	const std::string backup = "idz_roundtrip.fbk";
+	const std::string restored = "idz_restored.fdb";
 
 	remove(backup.c_str());
 	remove(restored.c_str());
@@ -1024,12 +1024,12 @@ LTZ_TEST_CASE(BackupRestoreRoundTrip)
  * character set forces the engine to transliterate before comparing.
  * ------------------------------------------------------------------------ */
 
-LTZ_TEST_CASE(BlobAndTransliteration)
+IDZ_TEST_CASE(BlobAndTransliteration)
 {
 	TestDb db("blob");
 
-	db.ddl("CREATE TABLE B1 (ID INTEGER, V D_LTZ,"
-		" T BLOB SUB_TYPE TEXT CHARACTER SET WIN1252 COLLATE LTZ)");
+	db.ddl("CREATE TABLE B1 (ID INTEGER, V D_IDZ,"
+		" T BLOB SUB_TYPE TEXT CHARACTER SET WIN1252 COLLATE IDZ)");
 
 	db.exec("INSERT INTO B1 VALUES (1, '00000A', 'the ABC of it')");
 	db.exec("INSERT INTO B1 VALUES (2, 'a',      'the abc of it')");
@@ -1076,17 +1076,17 @@ LTZ_TEST_CASE(BlobAndTransliteration)
 /* ------------------------------------------------------------------------ *
  * 7. Numeric ordering through a real index
  *
- * The unit test in LtrimZeroKeyTest.cpp owns the ordering rule itself. What
+ * The unit test in IdZpadKeyTest.cpp owns the ordering rule itself. What
  * is checked here is that a b-tree built from those keys navigates in that
  * same order, and that a range over values of one width does not pick up a
  * narrower one.
  * ------------------------------------------------------------------------ */
 
-LTZ_TEST_CASE(NumericOrderAndRange)
+IDZ_TEST_CASE(NumericOrderAndRange)
 {
 	TestDb db("numeric");
 
-	db.ddl("CREATE TABLE N1 (ID INTEGER, V D_LTZ)");
+	db.ddl("CREATE TABLE N1 (ID INTEGER, V D_IDZ)");
 
 	// ID is the expected ascending position, so ORDER BY V must return the
 	// ids in increasing order.
@@ -1168,15 +1168,15 @@ LTZ_TEST_CASE(NumericOrderAndRange)
  * rewritten into blr_starting by the optimizer and follows the same path.
  * ------------------------------------------------------------------------ */
 
-LTZ_TEST_CASE(StartingWithMatchesNaturalScan)
+IDZ_TEST_CASE(StartingWithMatchesNaturalScan)
 {
 	TestDb db("starting");
 
-	db.ddl("CREATE TABLE S1 (ID INTEGER, V D_LTZ)");
+	db.ddl("CREATE TABLE S1 (ID INTEGER, V D_IDZ)");
 
 	// Zero prefixed rows. STARTING WITH goes through texttype_fn_canonical,
 	// a per character uppercase mapping that is deliberately NOT zero
-	// insensitive (lc_ltrim_zero.cpp:64-71), so it matches raw bytes, not
+	// insensitive (lc_id_zpad_ci.cpp:64-71), so it matches raw bytes, not
 	// equivalence classes. Every one of these rows begins with at least one
 	// '0': MOD(i, 5) + 1 ranges 1..5, and SUBSTRING off a 4 character source
 	// clips 5 down to 4, so the shortest prefix produced is a single '0'.
@@ -1277,11 +1277,11 @@ LTZ_TEST_CASE(StartingWithMatchesNaturalScan)
  * nodes, so this case carries the volume.
  * ------------------------------------------------------------------------ */
 
-LTZ_TEST_CASE(DescendingIndexAtVolume)
+IDZ_TEST_CASE(DescendingIndexAtVolume)
 {
 	TestDb db("descvolume");
 
-	db.ddl("CREATE TABLE DV (ID INTEGER NOT NULL PRIMARY KEY, V D_LTZ)");
+	db.ddl("CREATE TABLE DV (ID INTEGER NOT NULL PRIMARY KEY, V D_IDZ)");
 
 	// Values of several different normalized lengths, plus the empty class,
 	// so the length prefix varies across the whole index.
@@ -1383,6 +1383,6 @@ LTZ_TEST_CASE(DescendingIndexAtVolume)
 }
 
 
-BOOST_AUTO_TEST_SUITE_END()	// LtrimZeroSuite
+BOOST_AUTO_TEST_SUITE_END()	// IdZpadSuite
 BOOST_AUTO_TEST_SUITE_END()	// EngineSuite
 

@@ -1,5 +1,5 @@
 /*
- * Minimal INTL module exposing only the LTRIM_ZERO collation.
+ * Minimal INTL module exposing only the ID_ZPAD_CI collation.
  *
  * Firebird loads an INTL module by looking up a handful of C entry points in
  * a shared library named by an intl_module block in any *.conf file inside
@@ -23,8 +23,8 @@
  * does not use ICU, so this module has no dependency on the Firebird
  * libraries at run time.
  *
- * Build: builds/win32/make_ltrimzero.bat on Windows, or the Makefile in
- * doc/README.fbltrimzero_build.md on Linux.
+ * Build: builds/win32/make_lrsintl.bat on Windows, or the Makefile in
+ * doc/README.lrsintl_build.md on Linux.
  */
 
 #include "firebird.h"
@@ -37,15 +37,15 @@
 USHORT version = INTL_VERSION_2;
 
 // The collation driver, compiled straight into this module.
-#include "intl/lc_ltrim_zero.cpp"
+#include "intl/lc_id_zpad_ci.cpp"
 
 namespace
 {
-	// Names must match the collation names used in fbltrimzero.conf.
+	// Names must match the collation names used in lrsintl.conf.
 	const char* const COLLATIONS[] =
 	{
-		"WIN1252_LTRIM_ZERO",
-		"ISO8859_1_LTRIM_ZERO",
+		"WIN1252_ID_ZPAD_CI",
+		"ISO8859_1_ID_ZPAD_CI",
 		nullptr
 	};
 
@@ -101,20 +101,20 @@ FB_DLL_EXPORT INTL_BOOL LD_lookup_texttype_with_status(
 	if (!isOurs(texttype_name))
 	{
 		report(status_buffer, status_buffer_length,
-			"fbltrimzero: this module only provides the LTRIM_ZERO collations");
+			"lrsintl: this module only provides the ID_ZPAD_CI collations");
 		return false;
 	}
 
 	// The driver uses TEXTTYPE_ENTRY3, so the charset argument is unused and
 	// passing NULL is safe. That is what keeps this module independent from
 	// fbintl: it never has to build a charset of its own.
-	const INTL_BOOL ok = LCLTRIMZERO_init(tt, nullptr, texttype_name, charset_name,
+	const INTL_BOOL ok = LCIDZPADCI_init(tt, nullptr, texttype_name, charset_name,
 		attributes, specific_attributes, specific_attributes_length, nullptr);
 
 	if (!ok)
 	{
 		report(status_buffer, status_buffer_length,
-			"fbltrimzero: unsupported attributes. Only CASE INSENSITIVE and"
+			"lrsintl: unsupported attributes. Only CASE INSENSITIVE and"
 			" PAD SPACE are accepted, and specific attributes are not supported");
 	}
 

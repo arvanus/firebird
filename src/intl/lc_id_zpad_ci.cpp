@@ -1,6 +1,6 @@
 /*
  *	PROGRAM:	InterBase International support
- *	MODULE:		lc_ltrim_zero.cpp
+ *	MODULE:		lc_id_zpad_ci.cpp
  *	DESCRIPTION:	Custom collation: LTRIM zeros and spaces, case-insensitive
  *
  * The contents of this file are subject to the Interbase Public
@@ -259,7 +259,7 @@ static ULONG texttype_fn_canonical(texttype* /*obj*/,
 }
 
 
-TEXTTYPE_ENTRY3(LCLTRIMZERO_init)
+TEXTTYPE_ENTRY3(LCIDZPADCI_init)
 {
 	// The collation is always case-insensitive over the ASCII range, so
 	// TEXTTYPE_ATTR_CASE_INSENSITIVE changes nothing here. It is accepted
@@ -278,7 +278,7 @@ TEXTTYPE_ENTRY3(LCLTRIMZERO_init)
 	}
 
 	cache->texttype_version = TEXTTYPE_VERSION_1;
-	cache->texttype_name = "LTRIM_ZERO";
+	cache->texttype_name = "ID_ZPAD_CI";
 	cache->texttype_country = CC_INTL;
 	cache->texttype_pad_option = (attributes & TEXTTYPE_ATTR_PAD_SPACE) ? true : false;
 

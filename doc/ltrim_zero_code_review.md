@@ -1,5 +1,12 @@
 # Revisão: `src/intl/lc_ltrim_zero.cpp` (branch `feature/ltrim-zero-collation-v5`)
 
+> **Rename note.** This is a dated record, written while the collation was called
+> `LTRIM_ZERO` and the standalone module `fbltrimzero`. Every name and path below is
+> the one in use at the time and was deliberately left untouched. Current state:
+> the collation is `ID_ZPAD_CI` (`WIN1252_ID_ZPAD_CI`, `ISO8859_1_ID_ZPAD_CI`), the
+> driver is `src/intl/lc_id_zpad_ci.cpp`, the standalone module is `lrsintl`, and the
+> live reference is `doc/README.id_zpad_ci.md`.
+
 > **Status: corrigido e verificado no Windows e no Linux, em Release e em DEV_BUILD.**
 >
 > - Driver reescrito conforme P3 + C2 + A3 + A4.

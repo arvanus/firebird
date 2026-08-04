@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds Firebird on Linux from the Windows working tree and runs the
-# LTRIM_ZERO collation tests.
+# ID_ZPAD_CI collation tests.
 #
 #   run.sh            -> Release build (DefaultTarget=Release)
 #   run.sh developer  -> --enable-developer, which makes DefaultTarget=Debug
@@ -34,14 +34,14 @@ cd /src
 echo "branch: $(git rev-parse --abbrev-ref HEAD)  head: $(git rev-parse --short HEAD)"
 
 echo "===== overlay working tree changes"
-for f in src/intl/lc_ltrim_zero.cpp src/jrd/tests/LtrimZeroCollationTest.cpp test_ltrim_zero.sql; do
+for f in src/intl/lc_id_zpad_ci.cpp src/jrd/tests/IdZpadCollationTest.cpp test_id_zpad_ci.sql; do
     tr -d '\r' < "/repo/$f" > "$f"
     echo "  $f"
 done
 
 echo "===== registration present in the committed tree"
-grep -n "LCLTRIMZERO_init" src/intl/ld.cpp
-grep -n "LTRIM_ZERO" builds/install/misc/fbintl.conf
+grep -n "LCIDZPADCI_init" src/intl/ld.cpp
+grep -n "ID_ZPAD_CI" builds/install/misc/fbintl.conf
 grep -n "INTL_Objects" builds/posix/make.shared.variables
 
 if [ ! -f gen/Makefile ] || [ ! -f /src/.configured_$MODE ]; then
@@ -61,11 +61,11 @@ if [ "$MODE" = "developer" ]; then
     echo "  compile lines carrying -DDEV_BUILD: $(grep -c '\-DDEV_BUILD' /tmp/make.log || true)"
 fi
 
-echo "===== lc_ltrim_zero really compiled and linked?"
-find . -name "lc_ltrim_zero*.o" | head
+echo "===== lc_id_zpad_ci really compiled and linked?"
+find . -name "lc_id_zpad_ci*.o" | head
 SO=$(find gen -name "libfbintl.so*" -type f | head -1)
 echo "fbintl: $SO"
-nm -a "$SO" 2>/dev/null | grep -i ltrimzero || echo "  (symbol not exported, expected: it is internal to the module)"
+nm -a "$SO" 2>/dev/null | grep -i lrsintl || echo "  (symbol not exported, expected: it is internal to the module)"
 
 echo "===== make tests"
 make tests -j"$(nproc)" > /tmp/tests.log 2>&1 || { tail -60 /tmp/tests.log; exit 1; }
@@ -85,8 +85,8 @@ echo "engine_test: ${ENGINE_TEST:-NOT FOUND}"
 echo "isql:        $ISQL $([ -x "$ISQL" ] || echo NOT FOUND)"
 
 if [ -n "$ENGINE_TEST" ]; then
-    echo "===== LTRIM_ZERO suite"
-    "$ENGINE_TEST" --run_test=EngineSuite/LtrimZeroSuite --log_level=message 2>&1 | tail -70
+    echo "===== ID_ZPAD_CI suite"
+    "$ENGINE_TEST" --run_test=EngineSuite/IdZpadSuite --log_level=message 2>&1 | tail -70
     echo "engine_test exit: ${PIPESTATUS[0]}"
 fi
 
@@ -98,7 +98,7 @@ if [ -x "$ISQL" ]; then
     ls "$FBROOT/intl"
     cd /tmp
     rm -f test_ltrim.fdb
-    FIREBIRD="$FBROOT" "$ISQL" -input /src/test_ltrim_zero.sql 2>&1 | tail -30
+    FIREBIRD="$FBROOT" "$ISQL" -input /src/test_id_zpad_ci.sql 2>&1 | tail -30
 fi
 
 echo "===== done ($MODE)"

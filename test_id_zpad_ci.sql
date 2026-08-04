@@ -1,12 +1,12 @@
 /*
- * Self-checking test suite for the LTRIM_ZERO collation.
+ * Self-checking test suite for the ID_ZPAD_CI collation.
  *
  * Every check writes one row into TST. A check of kind 'A' (assert) fails the
  * suite when ACTUAL differs from EXPECTED. A check of kind 'I' (info) only
  * records the observed behaviour and never fails: those are the documented
  * limits of the collation, not bugs.
  *
- * Run with:  isql -user SYSDBA -password masterkey -input test_ltrim_zero.sql
+ * Run with:  isql -user SYSDBA -password masterkey -input test_id_zpad_ci.sql
  * The suite passes when the final FAILED count is 0.
  */
 
@@ -19,15 +19,15 @@ CREATE DATABASE 'test_ltrim.fdb' PAGE_SIZE 8192 DEFAULT CHARACTER SET WIN1252;
 /* CASE INSENSITIVE is what makes SIMILAR TO consistent with LIKE and
    CONTAINING: SIMILAR TO is compiled to RE2 and reads the flag from the
    collation attributes instead of going through texttype_fn_canonical. */
-CREATE COLLATION WIN1252_LTRIM_ZERO FOR WIN1252
-    FROM EXTERNAL ('WIN1252_LTRIM_ZERO') CASE INSENSITIVE PAD SPACE;
+CREATE COLLATION WIN1252_ID_ZPAD_CI FOR WIN1252
+    FROM EXTERNAL ('WIN1252_ID_ZPAD_CI') CASE INSENSITIVE PAD SPACE;
 
-CREATE COLLATION ISO8859_1_LTRIM_ZERO FOR ISO8859_1
-    FROM EXTERNAL ('ISO8859_1_LTRIM_ZERO') CASE INSENSITIVE PAD SPACE;
+CREATE COLLATION ISO8859_1_ID_ZPAD_CI FOR ISO8859_1
+    FROM EXTERNAL ('ISO8859_1_ID_ZPAD_CI') CASE INSENSITIVE PAD SPACE;
 
 /* Same driver, NO PAD, to prove texttype_pad_option is honoured. */
-CREATE COLLATION WIN1252_LTZ_NOPAD FOR WIN1252
-    FROM EXTERNAL ('WIN1252_LTRIM_ZERO') NO PAD;
+CREATE COLLATION WIN1252_IDZ_NOPAD FOR WIN1252
+    FROM EXTERNAL ('WIN1252_ID_ZPAD_CI') NO PAD;
 
 COMMIT;
 
@@ -47,9 +47,9 @@ COMMIT;
 /* ------------------------------------------------------------------ */
 
 INSERT INTO TST (NAME, EXPECTED, ACTUAL)
-SELECT '0.1 both LTRIM_ZERO collations registered', '2',
+SELECT '0.1 both ID_ZPAD_CI collations registered', '2',
        CAST((SELECT COUNT(*) FROM RDB$COLLATIONS
-             WHERE RDB$COLLATION_NAME IN ('WIN1252_LTRIM_ZERO', 'ISO8859_1_LTRIM_ZERO')) AS VARCHAR(80))
+             WHERE RDB$COLLATION_NAME IN ('WIN1252_ID_ZPAD_CI', 'ISO8859_1_ID_ZPAD_CI')) AS VARCHAR(80))
 FROM RDB$DATABASE;
 
 COMMIT;
@@ -61,7 +61,7 @@ COMMIT;
 
 CREATE TABLE T_VC (
     ID INTEGER,
-    V  VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_LTRIM_ZERO
+    V  VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_ID_ZPAD_CI
 );
 
 INSERT INTO T_VC VALUES ( 1, '00000A');
@@ -130,9 +130,9 @@ COMMIT;
 
 CREATE TABLE T_PAD (
     ID INTEGER,
-    C  CHAR(8)     CHARACTER SET WIN1252 COLLATE WIN1252_LTRIM_ZERO,
-    V  VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_LTRIM_ZERO,
-    N  VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_LTZ_NOPAD
+    C  CHAR(8)     CHARACTER SET WIN1252 COLLATE WIN1252_ID_ZPAD_CI,
+    V  VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_ID_ZPAD_CI,
+    N  VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_IDZ_NOPAD
 );
 
 INSERT INTO T_PAD VALUES (1, 'A',     'A',     'A');
@@ -175,7 +175,7 @@ COMMIT;
 
 CREATE TABLE T_EMPTY (
     ID INTEGER,
-    V  VARCHAR(10) CHARACTER SET WIN1252 COLLATE WIN1252_LTRIM_ZERO
+    V  VARCHAR(10) CHARACTER SET WIN1252 COLLATE WIN1252_ID_ZPAD_CI
 );
 
 INSERT INTO T_EMPTY VALUES (1, '000');
@@ -277,7 +277,7 @@ COMMIT;
 /* ------------------------------------------------------------------ */
 
 CREATE TABLE T_UQ (
-    V VARCHAR(20) CHARACTER SET WIN1252 UNIQUE COLLATE WIN1252_LTRIM_ZERO
+    V VARCHAR(20) CHARACTER SET WIN1252 UNIQUE COLLATE WIN1252_ID_ZPAD_CI
 );
 COMMIT;
 
@@ -321,7 +321,7 @@ COMMIT;
 
 CREATE TABLE T_LONG (
     ID INTEGER,
-    V  VARCHAR(32700) CHARACTER SET WIN1252 COLLATE WIN1252_LTRIM_ZERO
+    V  VARCHAR(32700) CHARACTER SET WIN1252 COLLATE WIN1252_ID_ZPAD_CI
 );
 
 /* _WIN1252 introducers: the connection charset is UTF8 and an UTF8 literal
@@ -426,7 +426,7 @@ COMMIT;
 
 CREATE TABLE T_BIGKEY (
     ID INTEGER,
-    V  VARCHAR(12000) CHARACTER SET WIN1252 COLLATE WIN1252_LTRIM_ZERO,
+    V  VARCHAR(12000) CHARACTER SET WIN1252 COLLATE WIN1252_ID_ZPAD_CI,
     P  VARCHAR(12000) CHARACTER SET WIN1252
 );
 
@@ -442,7 +442,7 @@ COMMIT;
    above MAX_KEY. Kept as a hard assertion: this is not just observed,
    it is structurally guaranteed by lookForChange (see header above). */
 INSERT INTO TST (NAME, EXPECTED, ACTUAL)
-SELECT '6b.1 GROUP BY over 12000 byte keys: LTRIM_ZERO behaves like the default collation',
+SELECT '6b.1 GROUP BY over 12000 byte keys: ID_ZPAD_CI behaves like the default collation',
        CAST((SELECT COUNT(*) FROM (SELECT P FROM T_BIGKEY GROUP BY P)) AS VARCHAR(80)),
        CAST((SELECT COUNT(*) FROM (SELECT V FROM T_BIGKEY GROUP BY V)) AS VARCHAR(80))
 FROM RDB$DATABASE;
@@ -457,7 +457,7 @@ FROM RDB$DATABASE;
    DO_32_COMPARE finds two adjacent sort keys byte equal (sort.cpp:1301-
    1312), with no value level recheck at all, so the two 12000 byte rows
    (same normalized length, differing only in the last byte) collapse
-   into one under LTRIM_ZERO while the default collation, with no key
+   into one under ID_ZPAD_CI while the default collation, with no key
    truncation, still tells them apart. This is the one place block 6b
    actually diverges from the default collation control column;
    recorded as informative, matching the convention used elsewhere in
@@ -508,7 +508,7 @@ COMMIT;
 
 CREATE TABLE T_CASE (
     ID INTEGER,
-    V  VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_LTRIM_ZERO
+    V  VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_ID_ZPAD_CI
 );
 
 INSERT INTO T_CASE VALUES (1, 'ção');
@@ -597,7 +597,7 @@ COMMIT;
 /* ------------------------------------------------------------------ */
 
 CREATE TABLE T_ORD (
-    V VARCHAR(10) CHARACTER SET WIN1252 COLLATE WIN1252_LTRIM_ZERO
+    V VARCHAR(10) CHARACTER SET WIN1252 COLLATE WIN1252_ID_ZPAD_CI
 );
 
 INSERT INTO T_ORD VALUES ('0009');
@@ -619,7 +619,7 @@ FROM RDB$DATABASE;
    first fixes that: an 11 digit value never falls inside a 14 digit
    range. */
 CREATE TABLE T_RANGE (
-    V VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_LTRIM_ZERO
+    V VARCHAR(20) CHARACTER SET WIN1252 COLLATE WIN1252_ID_ZPAD_CI
 );
 
 INSERT INTO T_RANGE VALUES ('12345678000199');
@@ -642,7 +642,7 @@ COMMIT;
 
 CREATE TABLE T_ISO (
     ID INTEGER,
-    V  VARCHAR(20) CHARACTER SET ISO8859_1 COLLATE ISO8859_1_LTRIM_ZERO
+    V  VARCHAR(20) CHARACTER SET ISO8859_1 COLLATE ISO8859_1_ID_ZPAD_CI
 );
 
 INSERT INTO T_ISO VALUES (1, '00000123');

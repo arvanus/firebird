@@ -1,24 +1,24 @@
-# Building fbltrimzero, the standalone LTRIM_ZERO module
+# Building lrsintl, the standalone ID_ZPAD_CI module
 
 ## What this is
 
-`fbltrimzero` is a small INTL module that exposes only the `LTRIM_ZERO`
-collations (`WIN1252_LTRIM_ZERO` and `ISO8859_1_LTRIM_ZERO`) as a shared
+`lrsintl` is a small INTL module that exposes only the `ID_ZPAD_CI`
+collations (`WIN1252_ID_ZPAD_CI` and `ISO8859_1_ID_ZPAD_CI`) as a shared
 library separate from `fbintl`. It is built from a single source file,
-`src/intl/ltrimzero/ld_min.cpp`, which `#include`s the collation driver,
-`src/intl/lc_ltrim_zero.cpp`, straight from the tree so there is one source of
+`src/intl/lrsintl/ld_min.cpp`, which `#include`s the collation driver,
+`src/intl/lc_id_zpad_ci.cpp`, straight from the tree so there is one source of
 truth for the collation logic.
 
 It exists because production installs run the stock engine, not a rebuilt
 one: replacing `fbintl.dll`/`libfbintl.so` there would register the
-`LTRIM_ZERO` collations a second time (once from the stock module, once from
+`ID_ZPAD_CI` collations a second time (once from the stock module, once from
 the replacement) and the engine would refuse to load one of the two. Shipping
 a second, narrowly scoped module avoids that clash entirely: it declares the
 collations under its own `intl_module` name in its own `.conf` file, and the
 charsets themselves (`WIN1252`, `ISO8859_1`) keep coming from `fbintl` as
-always. See `src/intl/ltrimzero/fbltrimzero.conf` for the registration.
+always. See `src/intl/lrsintl/lrsintl.conf` for the registration.
 
-`src/intl/ltrimzero/` is deliberately outside every existing project/glob
+`src/intl/lrsintl/` is deliberately outside every existing project/glob
 that builds `src/intl`: `builds/win32/msvc15/intl.vcxproj` lists its sources
 explicitly and does not mention this directory, and the POSIX object glob in
 `builds/posix/make.shared.variables` only scans `src/intl/*.cpp`, not its
@@ -31,20 +31,20 @@ there is no duplicate `LD_version` symbol to resolve.
 set VS170COMNTOOLS=C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\
 cd builds\win32
 call setenvvar.bat
-call make_ltrimzero.bat
+call make_lrsintl.bat
 ```
 
-`setenvvar.bat` sets `FB_ROOT_PATH`, which `make_ltrimzero.bat` requires.
-The script compiles `src/intl/ltrimzero/ld_min.cpp` directly with `cl`, copies
-`fbltrimzero.conf` alongside the binary, and prints the `dumpbin` checks
+`setenvvar.bat` sets `FB_ROOT_PATH`, which `make_lrsintl.bat` requires.
+The script compiles `src/intl/lrsintl/ld_min.cpp` directly with `cl`, copies
+`lrsintl.conf` alongside the binary, and prints the `dumpbin` checks
 described below.
 
-Output: `builds\win32\ltrimzero\fbltrimzero.dll` and
-`builds\win32\ltrimzero\fbltrimzero.conf`.
+Output: `builds\win32\lrsintl\lrsintl.dll` and
+`builds\win32\lrsintl\lrsintl.conf`.
 
 ## The `/MT` decision
 
-`make_ltrimzero.bat`'s compile line mirrors the Release x64 settings of
+`make_lrsintl.bat`'s compile line mirrors the Release x64 settings of
 `intl.vcxproj` and `FirebirdCommon.props`, including `/EHsc-`
 (`FirebirdCommon.props:11`), with exactly one deliberate deviation: it links
 the module against the static CRT (`/MT`) where those files use `/MD`. This
@@ -54,7 +54,7 @@ this module is meant to be dropped into a customer's existing Firebird
 install rather than built and installed alongside it.
 
 This is safe specifically because no CRT object crosses the module boundary.
-The driver in `lc_ltrim_zero.cpp` allocates nothing, throws nothing and holds
+The driver in `lc_id_zpad_ci.cpp` allocates nothing, throws nothing and holds
 no state; the two exported entry points only read and write buffers that the
 engine itself owns. Mixing CRTs is a problem when one side frees memory the
 other side allocated, or when C++ exceptions unwind across the boundary;
@@ -62,16 +62,16 @@ neither happens here.
 
 `intl.vcxproj` also defines `INTL_EXPORTS` for `fbintl`, but that define is
 unused: it appears in no `.rc` file and no source file in the tree, only in
-`intl.vcxproj`'s own preprocessor definitions. `make_ltrimzero.bat` omits it
+`intl.vcxproj`'s own preprocessor definitions. `make_lrsintl.bat` omits it
 on purpose, and omitting it changes nothing observable.
 
 ## Verifying the build
 
-After `make_ltrimzero.bat` finishes, it runs these checks itself and prints
+After `make_lrsintl.bat` finishes, it runs these checks itself and prints
 the output. Confirm by eye:
 
 ```
-dumpbin /nologo /exports fbltrimzero.dll
+dumpbin /nologo /exports lrsintl.dll
 ```
 
 must list exactly two names, undecorated: `LD_version` and
@@ -80,7 +80,7 @@ must list exactly two names, undecorated: `LD_version` and
 Windows) produce; no `.def` file is needed.
 
 ```
-dumpbin /nologo /dependents fbltrimzero.dll
+dumpbin /nologo /dependents lrsintl.dll
 ```
 
 must list only `KERNEL32.dll`. If `VCRUNTIME140.dll` or `MSVCP140.dll` show
@@ -119,7 +119,7 @@ The Makefile:
 ```make
 FB_SRC ?= ../firebird
 
-TARGET  := fbltrimzero.so
+TARGET  := lrsintl.so
 
 # Same platform defines the POSIX build uses for src/intl.
 DEFS    := -DLINUX -DAMD64 -DFB_SEND_FLAGS=MSG_NOSIGNAL
@@ -131,7 +131,7 @@ LDFLAGS  ?= -shared
 
 all: $(TARGET)
 
-$(TARGET): ld_min.cpp $(FB_SRC)/src/intl/lc_ltrim_zero.cpp
+$(TARGET): ld_min.cpp $(FB_SRC)/src/intl/lc_id_zpad_ci.cpp
 	@test -f "$(FB_SRC)/src/include/gen/autoconfig.h" || { \
 		echo "ERROR: $(FB_SRC) is not configured. Run ./autogen.sh there first."; \
 		exit 1; }
@@ -169,17 +169,17 @@ recipe.
 
 ### Building it from a Windows checkout, in a container
 
-`doc/ltrim_zero_docker/build_module.sh` does the whole Linux recipe without a
+`doc/lrsintl_docker/build_module.sh` does the whole Linux recipe without a
 Linux machine: it clones the checkout mounted at `/repo` (a Windows tree has
 CRLF endings, which break `autogen.sh`), configures it, creates the
 `autoconfig.h` link, compiles, and runs the three checks.
 
 ```bash
-docker build -t ltz-builder:22.04 doc/ltrim_zero_docker
+docker build -t idz-builder:22.04 doc/lrsintl_docker
 docker run --rm \
-    -v "$PWD":/repo:ro -v ltz_src:/src \
-    -v "$PWD/doc/ltrim_zero_docker":/scripts:ro -v "$PWD/out":/out \
-    ltz-builder:22.04 bash /scripts/build_module.sh
+    -v "$PWD":/repo:ro -v idz_src:/src \
+    -v "$PWD/doc/lrsintl_docker":/scripts:ro -v "$PWD/out":/out \
+    idz-builder:22.04 bash /scripts/build_module.sh
 ```
 
 `/src` is a named volume, so a second run reuses the clone and the
@@ -195,20 +195,20 @@ both entry points resolving, and running the full SQL suite (55/55) inside
 
 ### Baking it into a Firebird docker image
 
-`doc/ltrim_zero_docker/image/Dockerfile` derives from the official image and
+`doc/lrsintl_docker/image/Dockerfile` derives from the official image and
 only drops the two files into `/opt/firebird/intl`:
 
 ```bash
-cp out/fbltrimzero.so out/fbltrimzero.conf doc/ltrim_zero_docker/image/
-docker build -t srs/firebird:5.0.3-noble-ltrimzero doc/ltrim_zero_docker/image
+cp out/lrsintl.so out/lrsintl.conf doc/lrsintl_docker/image/
+docker build -t srs/firebird:5.0.3-noble-lrsintl doc/lrsintl_docker/image
 ```
 
 To move it to a server without a registry:
 
 ```bash
-docker save srs/firebird:5.0.3-noble-ltrimzero | gzip > fb-ltz.tar.gz
+docker save srs/firebird:5.0.3-noble-lrsintl | gzip > fb-idz.tar.gz
 # on the server
-gunzip -c fb-ltz.tar.gz | docker load
+gunzip -c fb-idz.tar.gz | docker load
 ```
 
 ## Installing
@@ -216,12 +216,12 @@ gunzip -c fb-ltz.tar.gz | docker load
 Copy the built module and its `.conf` file into the `intl` directory of the
 target installation, next to `fbintl.dll`/`libfbintl.so` and `fbintl.conf`:
 
-- Windows: `fbltrimzero.dll` and `fbltrimzero.conf`
-- Linux: `fbltrimzero.so` and `fbltrimzero.conf`
+- Windows: `lrsintl.dll` and `lrsintl.conf`
+- Linux: `lrsintl.so` and `lrsintl.conf`
 
 Do **not** edit `fbintl.conf`. The engine scans every `*.conf` file in the
 `intl` directory on its own (`Jrd::IntlManager::initialize`, which does
-`ScanDir(intlPath, "*.conf")`), so `fbltrimzero.conf` is picked up as long as
+`ScanDir(intlPath, "*.conf")`), so `lrsintl.conf` is picked up as long as
 it is present; if the target's `fbintl.conf` does not already `#include` it,
 add an `#include` line for it there instead of inlining the module's
 declarations into `fbintl.conf`.
@@ -230,14 +230,14 @@ After copying, restart the server so it re-scans the `intl` directory, then
 in each database:
 
 ```sql
-CREATE COLLATION WIN1252_LTRIM_ZERO FOR WIN1252
-    FROM EXTERNAL ('WIN1252_LTRIM_ZERO') CASE INSENSITIVE PAD SPACE;
+CREATE COLLATION WIN1252_ID_ZPAD_CI FOR WIN1252
+    FROM EXTERNAL ('WIN1252_ID_ZPAD_CI') CASE INSENSITIVE PAD SPACE;
 
-CREATE COLLATION ISO8859_1_LTRIM_ZERO FOR ISO8859_1
-    FROM EXTERNAL ('ISO8859_1_LTRIM_ZERO') CASE INSENSITIVE PAD SPACE;
+CREATE COLLATION ISO8859_1_ID_ZPAD_CI FOR ISO8859_1
+    FROM EXTERNAL ('ISO8859_1_ID_ZPAD_CI') CASE INSENSITIVE PAD SPACE;
 ```
 
-Only `fbltrimzero.dll`/`fbltrimzero.so` is ever replaced in a target
+Only `lrsintl.dll`/`lrsintl.so` is ever replaced in a target
 installation's `intl` directory. `fbintl.dll`/`libfbintl.so` is never
 touched: it keeps owning the `WIN1252` and `ISO8859_1` charsets themselves,
 and swapping it would risk registering the collations twice.

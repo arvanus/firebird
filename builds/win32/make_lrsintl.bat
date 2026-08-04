@@ -1,7 +1,7 @@
 @echo off
 ::
-:: Builds fbltrimzero.dll, a standalone Firebird INTL module carrying only the
-:: LTRIM_ZERO collations, out of src/intl/ltrimzero/ld_min.cpp.
+:: Builds lrsintl.dll, a standalone Firebird INTL module carrying only the
+:: ID_ZPAD_CI collations, out of src/intl/lrsintl/ld_min.cpp.
 ::
 :: The module has no run time dependency on the Firebird libraries: the driver
 :: allocates nothing, throws nothing and does not use ICU. It is linked against
@@ -17,9 +17,9 @@
 :: does not need it either.
 ::
 :: Usage, from builds\win32, after setenvvar.bat:
-::     make_ltrimzero.bat
+::     make_lrsintl.bat
 ::
-:: Output: builds\win32\ltrimzero\fbltrimzero.dll
+:: Output: builds\win32\lrsintl\lrsintl.dll
 ::
 @echo on
 
@@ -28,8 +28,8 @@
     @exit /b 1
 )
 
-@set LTZ_OUT=%~dp0ltrimzero
-@if not exist "%LTZ_OUT%" mkdir "%LTZ_OUT%"
+@set IDZ_OUT=%~dp0lrsintl
+@if not exist "%IDZ_OUT%" mkdir "%IDZ_OUT%"
 
 cl /nologo ^
    /O2 /MT /GR- /EHsc- /std:c++17 /W3 ^
@@ -39,8 +39,8 @@ cl /nologo ^
    /I "%FB_ROOT_PATH%\src\include" ^
    /I "%FB_ROOT_PATH%\src\include\gen" ^
    /I "%FB_ROOT_PATH%\src\jrd" ^
-   /LD "%FB_ROOT_PATH%\src\intl\ltrimzero\ld_min.cpp" ^
-   /Fo"%LTZ_OUT%\\" /Fe"%LTZ_OUT%\fbltrimzero.dll" ^
+   /LD "%FB_ROOT_PATH%\src\intl\lrsintl\ld_min.cpp" ^
+   /Fo"%IDZ_OUT%\\" /Fe"%IDZ_OUT%\lrsintl.dll" ^
    /link /OPT:REF /OPT:ICF
 
 @if errorlevel 1 (
@@ -48,11 +48,11 @@ cl /nologo ^
     @exit /b 1
 )
 
-@copy /Y "%FB_ROOT_PATH%\src\intl\ltrimzero\fbltrimzero.conf" "%LTZ_OUT%\" >nul
+@copy /Y "%FB_ROOT_PATH%\src\intl\lrsintl\lrsintl.conf" "%IDZ_OUT%\" >nul
 
 @echo.
 @echo --- exported entry points
-dumpbin /nologo /exports "%LTZ_OUT%\fbltrimzero.dll" | findstr /C:"LD_version" /C:"LD_lookup_texttype_with_status"
+dumpbin /nologo /exports "%IDZ_OUT%\lrsintl.dll" | findstr /C:"LD_version" /C:"LD_lookup_texttype_with_status"
 @echo.
 @echo --- dependencies
-dumpbin /nologo /dependents "%LTZ_OUT%\fbltrimzero.dll"
+dumpbin /nologo /dependents "%IDZ_OUT%\lrsintl.dll"
