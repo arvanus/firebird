@@ -126,6 +126,47 @@ tamanho e vencem no byte, mas continuam mais curtos que o limite superior
 `'11'`, de tamanho 2. Quem filtra uma coluna de largura mista com `BETWEEN`
 precisa levar isso em conta, não só o caso de busca de raiz de CNPJ.
 
+**A collation não conhece sinal, e para valor negativo nada disso vale.** O
+corte da regra 2 para no primeiro caractere que não seja `'0'` nem `' '`, e
+`-` (0x2D) não é nenhum dos dois. Então o sinal blinda tudo que vem depois
+dele:
+
+| valor gravado | `N` | tamanho |
+|---|---|---|
+| `'-3'` | `-3` | 2 |
+| `'00-03'` | `-03` | 3, os zeros **antes** do sinal saem |
+| `'-0003'` | `-0003` | 5, os zeros **depois** do sinal ficam |
+
+Medido: `'-0003' <> '-3'` e `'00-03' <> '-3'`, mas `'00-03' = '-03'`. A
+propriedade que dá nome à collation não alcança negativo, porque ali os zeros
+não são mais os primeiros caracteres da string.
+
+A ordem também não é numérica para negativo, em dois eixos ao mesmo tempo.
+Medido com `ORDER BY ... COLLATE ISO8859_1_LTRIM_ZERO`:
+
+```
+5 < 9 < -1 < -3 < 00-03 < -20 < 300 < -100 < -0003
+```
+
+Todo negativo cai depois de todo positivo mais curto, porque o sinal conta um
+caractere no tamanho; e entre negativos a ordem sai por magnitude crescente,
+que é o inverso da ordem numérica. A ordem por tamanho piorou esse caso: a
+comparação byte a byte antiga punha `'-9' < '9'` por acaso, já que
+`-` (0x2D) < `9` (0x39). A igualdade quebrada de `'-0003'` contra `'-3'`, essa
+já existia antes e não mudou.
+
+Conclusão de uso: a collation é para identificador em texto (CNPJ, CPF,
+código de cadastro), não para número com sinal. Coluna que precise guardar
+negativo com semântica numérica pede coluna numérica de verdade, ou índice de
+expressão sobre uma forma normalizada, não esta collation.
+
+No `SCHERER_001` isso é acadêmico. Varrido em 2026-08-04: nenhuma linha com
+sinal em `ENTIDADE` (544149 linhas), `ENTIDADE_COBRANCA` nem
+`PRODUTO.FORNECEDOR`; uma linha em `ENTIDADE_OBSERVACAO`, com
+`-922337203685478`, lixo herdado da época em que o domínio era numérico. Essa
+linha é achada tanto pelo índice quanto pela varredura, então é feia, não
+inconsistente. As outras 364 colunas do domínio não foram varridas.
+
 **Acima de `MAX_KEY` (8192 bytes), `DISTINCT` (e empate de `ORDER BY`) podem
 parar de distinguir dois valores que difiram só nos 2 últimos bytes; `GROUP
 BY` não.** `MAX_KEY` é uma constante de compilação (`constants.h:195`), então
