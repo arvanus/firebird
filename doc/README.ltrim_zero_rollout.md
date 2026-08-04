@@ -308,6 +308,32 @@ Cada par que a seção 1 registrou quebrado passou a bater:
 Metadados, contagens e `SUM` da tabela acima saíram iguais aos da linha de
 base nos dois bancos.
 
+**Fora da `ENTIDADE` e fora do caso ascendente simples.** Todas as
+conferências acima passam pela `ENTIDADE` e pela sua PRIMARY KEY, que é um
+índice só de 421 segmentos. Navegar um índice de ponta a ponta e contar o que
+sai é o teste que não precisa de valor de amostra: se uma única chave tivesse
+sido montada fora de ordem, a caminhada pularia linha, que é exatamente o que
+o índice inteiro fazia antes do rebuild. Comparado com a contagem natural da
+mesma tabela:
+
+| índice | tipo | navegação x natural |
+|---|---|---|
+| `ENTIDADE_IDX7` | descendente, 1 segmento | 544149 / 544149 |
+| `ENTIDADE_IDX5` | descendente, composto, CNPJ na posição 0 | 544149 / 544149 |
+| `ENTIDADE_COBRANCA_PK` | PRIMARY KEY de outra tabela | 544570 / 544570 |
+| `ENTIDADE_OBSERVACAO_IDX1` | secundário | 641273 / 641273 |
+| `PRODUTO_IDX19` | comum, não único, sobre `FORNECEDOR` | 144655 / 144655 |
+
+Os descendentes importam porque são a variante estrutural que a PK não
+exercita e porque o `btr` soma um byte para eles. As 12 primeiras linhas de
+`ORDER BY CNPJ DESC` saem idênticas pelo índice e pela varredura, encabeçadas
+por um valor de 15 dígitos: o tamanho decide também na descida.
+
+Escolher os índices pela `RDB$STATISTICS` evita perder tempo: a estatística é
+recalculada pelo restore, então segmento sobre tabela vazia fica em 0 e não
+prova nada. As duas primeiras candidatas testadas, `CONTAS_A_RECEBER` e
+`CONTAS_A_PAGAR`, estavam vazias.
+
 ## 6. `gfix -v` durante a janela
 
 Entre a troca do dll e o fim do restore, `gfix -v` reporta corrupção de
