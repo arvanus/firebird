@@ -1,5 +1,12 @@
 # gbak: remapeamento de domínio no restore (-FIX_DOMAINS)
 
+> **Rename note.** This is a dated record, written while the companion collation was
+> called `LTRIM_ZERO` and its standalone module `fbltrimzero`. Names below are the
+> ones in use at the time and were deliberately left untouched. The collation is now
+> `ID_ZPAD_CI` (`WIN1252_ID_ZPAD_CI`, `ISO8859_1_ID_ZPAD_CI`) and the module `lrsintl`;
+> see `doc/README.id_zpad_ci.md` on the collation branch. Nothing about `-FIX_DOMAINS`
+> itself changed.
+
 Data: 2026-08-01
 Branch: `srs/gbak-domain-remap` (a partir de `v5.0-release`)
 Alvo: build interno próprio, desenhado para ser submetível upstream (ver seção 12.4)

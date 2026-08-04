@@ -19,14 +19,14 @@ BOOST_AUTO_TEST_SUITE(DomainRemapSuite)
 BOOST_AUTO_TEST_CASE(ParseInlineRule)
 {
 	DomainRemap remap;
-	remap.parse("TDR_CNPJ = VARCHAR(20) CHARACTER SET ISO8859_1 COLLATE ISO8859_1_LTRIM_ZERO_AI");
+	remap.parse("TDR_CNPJ = VARCHAR(20) CHARACTER SET ISO8859_1 COLLATE ISO8859_1_ID_ZPAD_CI");
 
 	BOOST_TEST(remap.ruleCount() == 1u);
 	BOOST_TEST((remap.rule(0).domainName == "TDR_CNPJ"));
 	BOOST_TEST(remap.rule(0).blrType == blr_varying);
 	BOOST_TEST(remap.rule(0).charLength == 20u);
 	BOOST_TEST((remap.rule(0).charsetName == "ISO8859_1"));
-	BOOST_TEST((remap.rule(0).collationName == "ISO8859_1_LTRIM_ZERO_AI"));
+	BOOST_TEST((remap.rule(0).collationName == "ISO8859_1_ID_ZPAD_CI"));
 }
 
 BOOST_AUTO_TEST_CASE(ParseCharAndOptionalClauses)

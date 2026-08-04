@@ -1,5 +1,12 @@
 # gbak -FIX_DOMAINS Implementation Plan
 
+> **Rename note.** This is a dated record, written while the companion collation was
+> called `LTRIM_ZERO` and its standalone module `fbltrimzero`. Names below are the
+> ones in use at the time and were deliberately left untouched. The collation is now
+> `ID_ZPAD_CI` (`WIN1252_ID_ZPAD_CI`, `ISO8859_1_ID_ZPAD_CI`) and the module `lrsintl`;
+> see `doc/README.id_zpad_ci.md` on the collation branch. Nothing about `-FIX_DOMAINS`
+> itself changed.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Adicionar ao gbak um switch `-FIX_DOMAINS` que redefine domínios durante o restore, referenciando charsets e collations por nome, substituindo o hack hardcoded de `TDR_CNPJ` que existe em `gbak_hacked`.
