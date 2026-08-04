@@ -189,9 +189,39 @@ reconstruído passar a enxergar o conflito.
    SCHERER_001.NEW.FDB  ->  SCHERER_001.FDB
    ```
 
+### Ensaio executado em 2026-08-04
+
+Os passos 1 a 4 foram rodados de ponta a ponta no `SCHERER_001` do servidor de
+desenvolvimento (18,56 GB, NVMe), com o dll novo já instalado. O passo 5, o
+rename, ficou de fora de propósito: o ensaio não precisa dele e deixar os dois
+arquivos lado a lado permite comparar o antes com o depois.
+
+| etapa | duração | resultado |
+|---|---|---|
+| `gbak -b -PAR 5` | 2,2 min | 8,28 GB de `.fbk`, zero erro no log |
+| `gbak -c -PAR 5` | 7,3 min | 18,68 GB, zero erro no log |
+| `gfix -v -full` | 5,0 min | saída vazia, nenhum erro de página ou de índice |
+| **total** | **~15 min** | |
+
+A janela do cliente é maior que isso: some o tempo de parar a aplicação, a
+troca do dll com o serviço parado e o rename. O `gfix` é opcional e pode sair
+da janela, já que o `-v` do restore não reportou nada.
+
+Antes de começar, vale rodar o gate barato da seção 3 na origem, forçando
+varredura, porque uma duplicata silenciosa gravada na janela só aparece como
+falha no meio do restore, depois de o backup inteiro já ter sido pago:
+
+```sql
+SELECT COUNT(*), COUNT(DISTINCT CNPJ || '') FROM ENTIDADE;   -- 544149 / 544149
+```
+
+No ensaio ele veio limpo, mesmo com o dll novo instalado desde 03/08 08:02 e o
+banco recebendo escrita depois disso.
+
 ## 5. Validação depois do restore
 
-Linha de base reconferida em 2026-08-03 contra o `SCHERER_001` atual. Os
+Linha de base reconferida em 2026-08-03 contra o `SCHERER_001` atual, e toda
+ela conferida de novo em 2026-08-04 contra a cópia restaurada do ensaio. Os
 mesmos números têm que sair do banco restaurado:
 
 | conferência | valor |
@@ -253,13 +283,40 @@ não devolve linha nenhuma.
 **Views.** As três views que expõem colunas do domínio (`VCONTAS_A_PAGAR`,
 `VCONTAS_A_RECEBER`, `V$PRODUTO_ESTOQUE_ANALISE_01`) já foram usadas como
 conferência na conversão do domínio e servem de novo: têm que responder sem
-erro, o que mostra que o BLR guardado continua válido.
+erro, o que mostra que o BLR guardado continua válido. Duas delas devolvem
+zero linha, na origem e na cópia restaurada. Isso é o estado do banco, não
+falha de conferência: o que se está medindo é a execução, não o conteúdo.
+
+**Inventário.** Rodar `ltrim_zero_rollout_inventory.sql` de novo na cópia
+restaurada e comparar com o da origem. No ensaio de 2026-08-04 as duas saídas
+vieram byte a byte idênticas, 7909 linhas: as 368 colunas, os 421 segmentos e
+os 38 índices de expressão atravessaram o restore sem mudança.
+
+### Resultado do ensaio de 2026-08-04
+
+Cada par que a seção 1 registrou quebrado passou a bater:
+
+| conferência | origem (índice velho, dll novo) | cópia restaurada |
+|---|---|---|
+| `CNPJ = '06056181000154'`, índice / varredura | **0** / 1 | 1 / 1 |
+| `BETWEEN` de 14 dígitos, índice / varredura | **0** / 139433 | 139433 / 139433 |
+| `ORDER BY CNPJ` navegando o índice | **0** de 544149 | 544149 |
+| 12 primeiros por `ORDER BY`, índice e varredura | - | `1,2,3,5,6,8,9,10,12,13,15,16` nas duas |
+| faixa alcançando outro tamanho normalizado | - | 0 |
+| domínio `TDR_CNPJ` (tipo / bytes / chars / collation) | - | 37 / 20 / 20 / `ISO8859_1_LTRIM_ZERO` |
+
+Metadados, contagens e `SUM` da tabela acima saíram iguais aos da linha de
+base nos dois bancos.
 
 ## 6. `gfix -v` durante a janela
 
 Entre a troca do dll e o fim do restore, `gfix -v` reporta corrupção de
 índice. É esperado: o validador lê as chaves com o driver novo. Não indica
 problema novo e não é motivo para abortar.
+
+Depois do restore ele fica limpo. No ensaio de 2026-08-04,
+`gfix -v -full -user SYSDBA -password masterkey` sobre a cópia restaurada
+rodou em 5 minutos e não imprimiu uma linha sequer.
 
 ## 7. Rollback
 
